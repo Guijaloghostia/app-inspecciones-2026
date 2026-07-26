@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 
-st.set_page_config(page_title="Control de Refiscalización 2026", layout="wide", initial_sidebar_state="expanded")
-
+st.set_page_config(page_title="CEO 2026 🔴", layout="wide", initial_sidebar_state="expanded")
 # --- ESTILOS CSS ---
 st.markdown("""
     <style>
