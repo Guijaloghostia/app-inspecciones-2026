@@ -2,22 +2,63 @@ import os
 import pandas as pd
 import streamlit as st
 
-# Configuración de página con la sidebar desplegable original
+# Configuración de página (ocultamos la sidebar por completo)
 st.set_page_config(
     page_title="Control de Inspecciones 2026",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
+)
+
+# --- ESTADO DE NAVEGACIÓN ---
+if "seccion" not in st.session_state:
+  st.session_state["seccion"] = "🔍 Buscador"
+
+# --- CSS PARA BOTONES FIJOS ABAJO Y DISEÑO MÓVIL ---
+st.markdown(
+    """
+    <style>
+        /* Oculta la barra lateral de Streamlit por completo */
+        [data-testid="stSidebar"] {
+            display: none;
+        }
+        
+        /* Espacio al final de la página para que el contenido no quede tapado por la barra inferior */
+        .main .block-container {
+            padding-bottom: 110px !important;
+        }
+
+        /* Estilo visual para las Tarjetas de Locales */
+        .card-local {
+            background-color: #262730;
+            border-left: 6px solid #ff4b4b;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .card-regular {
+            border-left: 6px solid #4caf50 !important;
+        }
+        .card-irregular {
+            border-left: 6px solid #f44336 !important;
+        }
+
+        /* Ajuste general de letra grande para celular */
+        p, label, span, div {
+            font-size: 17px !important;
+        }
+    </style>
+""",
+    unsafe_allow_html=True,
 )
 
 
-# --- CARGA COMPLETA DE DATOS DE LA BASE ---
+# --- CARGA COMPLETA DE DATOS ---
 @st.cache_data
 def cargar_datos():
   archivo = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
   if os.path.exists(archivo):
     df = pd.read_excel(archivo)
-    # Limpieza preventiva para cálculos y visualización
     if "TREL" in df.columns:
       df["TREL_num"] = pd.to_numeric(df["TREL"], errors="coerce").fillna(0)
     if "TNR" in df.columns:
@@ -33,67 +74,32 @@ df_raw = cargar_datos()
 if not df_raw.empty:
   df = df_raw.copy()
 
-  # =========================================================
-  # MENÚ LATERAL COMPLETO (SIDEBAR ORIGINAL CON MULTIFILTROS)
-  # =========================================================
-  st.sidebar.title("🔍 Control de Inspecciones")
-  st.sidebar.markdown("---")
-
-  opciones_menu = [
-      "🔎 Buscador Avanzado y Tabla",
-      "📊 Resumen General y Estadísticas",
-      "ℹ️ Información del Sistema",
-  ]
-  eleccion = st.sidebar.radio("Navegación / Secciones:", opciones_menu)
-
-  st.sidebar.markdown("---")
-
   # ==========================================
-  # OPCIÓN 1: BUSCADOR COMPLETO Y MÚLTIPLES FILTROS
+  # SECCIÓN 1: BUSCADOR DE LOCALES
   # ==========================================
-  if eleccion == "🔎 Buscador Avanzado y Tabla":
-    st.title("📋 Base Completa de Inspecciones")
+  if st.session_state["seccion"] == "🔍 Buscador":
+    st.title("📋 Búsqueda de Locales e Inspecciones")
 
-    # Contenedor de Filtros Avanzados
-    with st.expander("🔻 Filtros de Búsqueda (Tocá para desplegar)", expanded=True):
-      col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
+    with col1:
+      cuit_filtro = st.text_input("🔍 Buscar por CUIT:", placeholder="Ej: 30-...")
+      razon_filtro = st.text_input(
+          "🏢 Buscar por Razón Social:", placeholder="Ej: Nombre..."
+      )
 
-      with col1:
-        cuit_filtro = st.text_input("🔍 CUIT:", placeholder="Ej: 30-...")
-        razon_filtro = st.text_input(
-            "🏢 Razón Social:", placeholder="Ej: Nombre de fantasía o firma..."
+    with col2:
+      calle_filtro = st.text_input(
+          "📍 Buscar por Calle:", placeholder="Ej: San Martín..."
+      )
+      if "Localidad" in df.columns:
+        localidades = ["Todas"] + sorted(
+            [str(x) for x in df["Localidad"].dropna().unique()]
         )
+        localidad_filtro = st.selectbox("🌆 Localidad:", localidades)
+      else:
+        localidad_filtro = "Todas"
 
-      with col2:
-        calle_filtro = st.text_input(
-            "📍 Calle / Domicilio:", placeholder="Ej: San Martín..."
-        )
-        if "Localidad" in df.columns:
-          localidades = ["Todas"] + sorted(
-              [str(x) for x in df["Localidad"].dropna().unique()]
-          )
-          localidad_filtro = st.selectbox("🌆 Localidad:", localidades)
-        else:
-          localidad_filtro = "Todas"
-
-      with col3:
-        if "TNR" in df.columns:
-          estados = ["Todos"] + sorted(
-              [str(x) for x in df["TNR"].dropna().unique()]
-          )
-          estado_filtro = st.selectbox("📌 Estado (TNR):", estados)
-        else:
-          estado_filtro = "Todos"
-
-        if "Inspec." in df.columns:
-          inspectores = ["Todos"] + sorted(
-              [str(x) for x in df["Inspec."].dropna().unique()]
-          )
-          inspector_filtro = st.selectbox("👮 Inspector:", inspectores)
-        else:
-          inspector_filtro = "Todos"
-
-    # Aplicación de los Filtros al DataFrame
+    # Aplicación de Filtros
     if cuit_filtro and "Cuit" in df.columns:
       df = df[
           df["Cuit"]
@@ -112,92 +118,126 @@ if not df_raw.empty:
       ]
     if localidad_filtro != "Todas" and "Localidad" in df.columns:
       df = df[df["Localidad"].astype(str) == localidad_filtro]
-    if estado_filtro != "Todos" and "TNR" in df.columns:
-      df = df[df["TNR"].astype(str) == estado_filtro]
-    if inspector_filtro != "Todos" and "Inspec." in df.columns:
-      df = df[df["Inspec."].astype(str) == inspector_filtro]
 
-    # Indicador de resultados
-    st.success(f"**Registros encontrados:** `{len(df)}` de `{len(df_raw)}`")
-
-    # Función para resaltar filas según el estado
-    def colorear_filas(val):
-      try:
-        val_str = str(val).upper()
-        if "IRREGULAR" in val_str or (val_str.replace(".", "").isdigit() and float(val_str) > 0):
-          return "background-color: #ffcdd2; color: #b71c1c; font-weight: bold"
-        elif "REGULAR" in val_str:
-          return "background-color: #c8e6c9; color: #1b5e20; font-weight: bold"
-        elif "CERRADO" in val_str:
-          return "background-color: #ffe0b2; color: #e65100; font-weight: bold"
-      except:
-        pass
-      return ""
-
-    # MOSTRAR TODAS LAS COLUMNAS ORIGINALES DE LA BASE DE DATOS
-    cols_a_ocultar = ["TREL_num", "TNR_num"]
-    cols_visibles = [c for c in df.columns if c not in cols_a_ocultar]
-
-    if "TNR" in df.columns:
-      df_estilizado = df[cols_visibles].style.map(
-          colorear_filas, subset=["TNR"]
-      )
-      st.dataframe(df_estilizado, use_container_width=True, height=600)
-    else:
-      st.dataframe(df[cols_visibles], use_container_width=True, height=600)
-
-  # ==========================================
-  # OPCIÓN 2: RESUMEN GENERAL COMPLETO
-  # ==========================================
-  elif eleccion == "📊 Resumen General y Estadísticas":
-    st.title("📊 Resumen General de Fiscalización")
-
-    # Métricas Principales
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Actas / Inspecciones", len(df))
-
-    if "TNR" in df.columns:
-      regulares = len(df[df["TNR"].astype(str).str.contains("REGULAR", na=False)])
-      irregulares = len(df[df["TNR"].astype(str).str.contains("IRREGULAR", na=False)])
-      m2.metric("Locales Regulares", regulares)
-      m3.metric("Locales Irregulares", irregulares)
-
-    if "TREL_num" in df.columns:
-      m4.metric("Total Trabaljadores Relevados", int(df["TREL_num"].sum()))
-
+    st.markdown(f"**Locales encontrados:** `{len(df)}`")
     st.markdown("---")
 
-    # Gráficos y Tablas de Resumen Integradas
-    c_left, c_right = st.columns(2)
+    # Tarjetas de Locales
+    for idx, row in df.iterrows():
+      razon_val = row.get("RAZON SOCIAL", "Sin Razón Social")
+      cuit_val = row.get("Cuit", "-")
+      calle_val = row.get("CALLE", "")
+      num_val = row.get("Núm.", "")
+      loc_val = row.get("Localidad", "")
+      adicional_val = row.get("Adicional", "")
+      tnr_val = str(row.get("TNR", "-")).upper()
+      trel_val = row.get("TREL", 0)
+      exp_val = row.get("Expediente", "-")
+      inspec_val = row.get("Inspec.", "-")
+      fecha_val = row.get("FECHA", "-")
 
-    with c_left:
-      if "Localidad" in df.columns:
-        st.subheader("📍 Inspecciones por Localidad")
-        st.bar_chart(df["Localidad"].value_counts())
+      clase_card = "card-local"
+      if "REGULAR" in tnr_val and "IRREGULAR" not in tnr_val:
+        clase_card += " card-regular"
+      elif "IRREGULAR" in tnr_val:
+        clase_card += " card-irregular"
 
-    with c_right:
-      if "Inspec." in df.columns:
-        st.subheader("👮 Registros por Inspector")
-        st.dataframe(
-            df["Inspec."].value_counts().reset_index(),
-            use_container_width=True,
-        )
+      st.markdown(
+          f"""
+            <div class="{clase_card}">
+                <h3><b>🏢 {razon_val}</b></h3>
+                <p><b>🔍 CUIT:</b> {cuit_val}</p>
+                <p>📍 <b>Dirección:</b> {calle_val} {num_val} {f'({adicional_val})' if pd.notna(adicional_val) and adicional_val != '' else ''} - {loc_val}</p>
+                <p>📌 <b>Estado (TNR):</b> {tnr_val} | <b>Trabajadores Relevados (TREL):</b> {trel_val}</p>
+                <p>📂 <b>Expediente:</b> {exp_val} | 👮 <b>Inspector:</b> {inspec_val} | 📅 <b>Fecha:</b> {fecha_val}</p>
+            </div>
+            """,
+          unsafe_allow_html=True,
+      )
 
   # ==========================================
-  # OPCIÓN 3: INFORMACIÓN
+  # SECCIÓN 2: RESUMEN GENERAL
   # ==========================================
-  elif eleccion == "ℹ️ Información del Sistema":
-    st.title("ℹ️ Información y Ayuda")
+  elif st.session_state["seccion"] == "📊 Resumen":
+    st.title("📊 Resumen General de Fiscalización")
+
+    cuit_resumen = st.text_input(
+        "🔍 Filtrar resumen por CUIT (Opcional):", placeholder="Ej: 30-..."
+    )
+    if cuit_resumen and "Cuit" in df.columns:
+      df = df[
+          df["Cuit"]
+          .astype(str)
+          .str.contains(cuit_resumen, case=False, na=False)
+      ]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Locales", len(df))
+    if "TREL_num" in df.columns:
+      c2.metric("Total Relevados (TREL)", int(df["TREL_num"].sum()))
+    if "TNR_num" in df.columns:
+      c3.metric("Total No Registrados (TNR)", int(df["TNR_num"].sum()))
+
+    st.markdown("---")
+    if "Localidad" in df.columns:
+      st.subheader("📍 Inspecciones por Localidad")
+      st.bar_chart(df["Localidad"].value_counts())
+
+  # ==========================================
+  # SECCIÓN 3: INFORMACIÓN
+  # ==========================================
+  elif st.session_state["seccion"] == "ℹ️ Info":
+    st.title("ℹ️ Información del Sistema")
     st.info(
-        "Esta aplicación permite la consulta, filtrado y análisis integral de"
-        " las actas de fiscalización."
+        "Sistema optimizado para consulta rápida desde dispositivos móviles."
     )
     st.markdown("""
-        **Funcionalidades principales:**
-        * **Filtros Combinados:** Podés filtrar por CUIT, Razón Social, Calle, Localidad, Estado y Inspector simultáneamente.
-        * **Visualización de Base Completa:** La tabla incluye todas las columnas del archivo original (CIIU, Expedientes, Adicionales, etc.).
-        * **Métricas en tiempo real:** Los datos del resumen se actualizan según los datos cargados.
+        * **Navegación Táctil:** Usá la barra de botones en la parte inferior de la pantalla para cambiar de vista.
+        * **Tarjetas Rápidas:** Información organizada con CUIT, estado y dirección resaltados.
         """)
+
+  # ==========================================
+  # BOTONES FIJOS EN LA PARTE INFERIOR
+  # ==========================================
+  st.markdown("---")
+  btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+  with btn_col1:
+    if st.button(
+        "🔍 Buscador",
+        use_container_width=True,
+        type=(
+            "primary"
+            if st.session_state["seccion"] == "🔍 Buscador"
+            else "secondary"
+        ),
+    ):
+      st.session_state["seccion"] = "🔍 Buscador"
+      st.rerun()
+
+  with btn_col2:
+    if st.button(
+        "📊 Resumen",
+        use_container_width=True,
+        type=(
+            "primary"
+            if st.session_state["seccion"] == "📊 Resumen"
+            else "secondary"
+        ),
+    ):
+      st.session_state["seccion"] = "📊 Resumen"
+      st.rerun()
+
+  with btn_col3:
+    if st.button(
+        "ℹ️ Info",
+        use_container_width=True,
+        type=(
+            "primary" if st.session_state["seccion"] == "ℹ️ Info" else "secondary"
+        ),
+    ):
+      st.session_state["seccion"] = "ℹ️ Info"
+      st.rerun()
 
 else:
   st.warning("Verificá que el archivo de Excel esté cargado en GitHub.")
