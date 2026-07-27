@@ -1,136 +1,131 @@
-import streamlit as st
-import pandas as pd
 import os
+import pandas as pd
+import streamlit as st
 
-# Configuración de página
+# Configuración de página original (con sidebar habilitada)
 st.set_page_config(
-    page_title="Control de Inspecciones 2026", 
-    layout="wide", 
-    initial_sidebar_state="collapsed"
+    page_title="Control de Inspecciones 2026",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# --- ESTILOS CSS (BOTONES ABAJO) ---
-st.markdown("""
-    <style>
-        /* Fija la barra de pestañas al borde inferior del celular */
-        .stTabs [data-baseweb="tab-list"] {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            background-color: #1e1e1e; /* Fondo oscuro para los botones */
-            z-index: 99999;
-            display: flex;
-            justify-content: space-around;
-            padding: 10px 0;
-            box-shadow: 0px -2px 10px rgba(0,0,0,0.5);
-        }
-        /* Estilos de cada botón */
-        .stTabs [data-baseweb="tab"] {
-            font-size: 16px !important;
-            font-weight: bold;
-            padding: 10px !important;
-            flex-grow: 1;
-            text-align: center;
-            color: #ffffff !important;
-        }
-        /* Resalta el botón seleccionado en rojo */
-        .stTabs [aria-selected="true"] {
-            color: #ff4b4b !important;
-            border-top: 3px solid #ff4b4b !important;
-        }
-        /* Margen inferior para que la tabla no quede tapada por los botones */
-        .block-container {
-            padding-bottom: 90px !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
-# --- CARGA DE DATOS Y CORRECCIÓN DE NÚMEROS ---
+# --- CARGA DE DATOS ---
 @st.cache_data
 def cargar_datos():
-    archivo = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
-    if os.path.exists(archivo):
-        df = pd.read_excel(archivo)
-        # Limpiamos errores para que no falle la suma en el resumen
-        if 'TREL' in df.columns:
-            df['TREL_num'] = pd.to_numeric(df['TREL'], errors='coerce').fillna(0)
-        if 'TNR' in df.columns:
-            df['TNR_num'] = pd.to_numeric(df['TNR'], errors='coerce').fillna(0)
-        return df
-    else:
-        st.error(f"No se encontró el archivo: {archivo}")
-        return pd.DataFrame()
+  archivo = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
+  if os.path.exists(archivo):
+    df = pd.read_excel(archivo)
+    # Limpieza preventiva para evitar errores en las métricas
+    if "TREL" in df.columns:
+      df["TREL_num"] = pd.to_numeric(df["TREL"], errors="coerce").fillna(0)
+    if "TNR" in df.columns:
+      df["TNR_num"] = pd.to_numeric(df["TNR"], errors="coerce").fillna(0)
+    return df
+  else:
+    st.error(f"No se encontró el archivo: {archivo}")
+    return pd.DataFrame()
+
 
 df_raw = cargar_datos()
 
 if not df_raw.empty:
-    df = df_raw.copy()
+  df = df_raw.copy()
 
-    # --- NAVEGACIÓN (LOS BOTONES QUE QUEDAN ABAJO) ---
-    tab_busqueda, tab_resumen, tab_instrucciones = st.tabs([
-        "🔍 Tabla / Filtros", 
-        "📊 Resumen", 
-        "ℹ️ Info"
-    ])
+  # ==========================================
+  # MENÚ LATERAL DESPLEGABLE ORIGINAL (SIDEBAR)
+  # ==========================================
+  st.sidebar.title("📌 Menú de Opciones")
+  opciones_menu = [
+      "🔍 Buscador / Filtros",
+      "📊 Resumen General",
+      "ℹ️ Información",
+  ]
+  eleccion = st.sidebar.radio("Ir a:", opciones_menu)
 
-    # === PESTAÑA 1: BUSCADOR Y TABLA COLOREADA ===
-    with tab_busqueda:
-        st.subheader("Búsqueda de Locales e Inspecciones")
-        
-        # Filtros incluyendo el CUIT
-        col_cuit, col_razon, col_calle = st.columns(3)
-        with col_cuit:
-            cuit_filtro = st.text_input("🔍 CUIT:", placeholder="Ej: 30-...")
-        with col_razon:
-            razon_filtro = st.text_input("🏢 Razón Social:", placeholder="Ej: Nombre...")
-        with col_calle:
-            calle_filtro = st.text_input("📍 Calle:", placeholder="Ej: San Martín...")
+  # ==========================================
+  # OPCCIÓN 1: BUSCADOR CON FILTRO DE CUIT
+  # ==========================================
+  if eleccion == "🔍 Buscador / Filtros":
+    st.title("Búsqueda de Locales e Inspecciones")
 
-        # Aplicamos los filtros si escribiste algo
-        if cuit_filtro:
-            df = df[df['Cuit'].astype(str).str.contains(cuit_filtro, case=False, na=False)]
-        if razon_filtro:
-            df = df[df['RAZON SOCIAL'].astype(str).str.contains(razon_filtro, case=False, na=False)]
-        if calle_filtro:
-            df = df[df['CALLE'].astype(str).str.contains(calle_filtro, case=False, na=False)]
+    # Filtros en la pantalla principal
+    col_cuit, col_razon, col_calle = st.columns(3)
 
-        st.markdown(f"**Registros encontrados:** `{len(df)}`")
+    with col_cuit:
+      cuit_filtro = st.text_input("🔍 CUIT:", placeholder="Ej: 30-...")
+    with col_razon:
+      razon_filtro = st.text_input(
+          "🏢 Razón Social:", placeholder="Ej: Nombre..."
+      )
+    with col_calle:
+      calle_filtro = st.text_input("📍 Calle:", placeholder="Ej: San Martín...")
 
-        # Función para pintar la tabla (rojo si hay no registrados, verde si está en regla)
-        def colorear_tnr(val):
-            try:
-                val_num = float(val)
-                if val_num > 0:
-                    return 'background-color: #ffcdd2; color: #b71c1c; font-weight: bold'
-                return 'background-color: #c8e6c9; color: #1b5e20; font-weight: bold'
-            except:
-                return ''
+    # Aplicación de los filtros
+    if cuit_filtro and "Cuit" in df.columns:
+      df = df[
+          df["Cuit"]
+          .astype(str)
+          .str.contains(cuit_filtro, case=False, na=False)
+      ]
+    if razon_filtro and "RAZON SOCIAL" in df.columns:
+      df = df[
+          df["RAZON SOCIAL"]
+          .astype(str)
+          .str.contains(razon_filtro, case=False, na=False)
+      ]
+    if calle_filtro and "CALLE" in df.columns:
+      df = df[
+          df["CALLE"].astype(str).str.contains(calle_filtro, case=False, na=False)
+      ]
 
-        columnas = ['Cuit', 'RAZON SOCIAL', 'CALLE', 'Núm.', 'TREL', 'TNR']
-        cols_existentes = [c for c in columnas if c in df.columns]
-        
-        if cols_existentes:
-            if 'TNR' in cols_existentes:
-                df_estilizado = df[cols_existentes].style.map(colorear_tnr, subset=['TNR'])
-                st.dataframe(df_estilizado, use_container_width=True, height=500)
-            else:
-                st.dataframe(df[cols_existentes], use_container_width=True, height=500)
+    st.markdown(f"**Registros encontrados:** `{len(df)}`")
 
-    # === PESTAÑA 2: MÉTRICAS Y RESUMEN ===
-    with tab_resumen:
-        st.subheader("Métricas Generales")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Registros", len(df))
-        if 'TREL_num' in df.columns:
-            c2.metric("Trabajadores Relevados (TREL)", int(df['TREL_num'].sum()))
-        if 'TNR_num' in df.columns:
-            c3.metric("Trabajadores No Registrados (TNR)", int(df['TNR_num'].sum()))
+    # Función para dar color a la columna TNR
+    def colorear_tnr(val):
+      try:
+        val_num = float(val)
+        if val_num > 0:
+          return (
+              "background-color: #ffcdd2; color: #b71c1c; font-weight: bold"
+          )
+        return "background-color: #c8e6c9; color: #1b5e20; font-weight: bold"
+      except:
+        return ""
 
-    # === PESTAÑA 3: INFO ===
-    with tab_instrucciones:
-        st.write("### Panel de Control de Inspecciones")
-        st.info("Navegá tocando los botones fijos en la parte inferior de tu pantalla.")
+    columnas_mostrar = ["Cuit", "RAZON SOCIAL", "CALLE", "Núm.", "TREL", "TNR"]
+    cols_existentes = [c for c in columnas_mostrar if c in df.columns]
+
+    if cols_existentes:
+      if "TNR" in cols_existentes:
+        df_estilizado = df[cols_existentes].style.map(
+            colorear_tnr, subset=["TNR"]
+        )
+        st.dataframe(df_estilizado, use_container_width=True, height=500)
+      else:
+        st.dataframe(df[cols_existentes], use_container_width=True, height=500)
+
+  # ==========================================
+  # OPCIÓN 2: RESUMEN GENERAL
+  # ==========================================
+  elif eleccion == "📊 Resumen General":
+    st.title("Métricas y Estadísticas")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Locales", len(df))
+    if "TREL_num" in df.columns:
+      c2.metric("Total Relevados (TREL)", int(df["TREL_num"].sum()))
+    if "TNR_num" in df.columns:
+      c3.metric("Total No Registrados (TNR)", int(df["TNR_num"].sum()))
+
+  # ==========================================
+  # OPCIÓN 3: INFORMACIÓN
+  # ==========================================
+  elif eleccion == "ℹ️ Información":
+    st.title("Información del Sistema")
+    st.info(
+        "Utilizá el menú desplegable de la izquierda (Sidebar) para navegar"
+        " entre las distintas secciones de la aplicación."
+    )
 
 else:
-    st.warning("Verificá que el archivo de Excel esté subido correctamente en el repositorio.")
+  st.warning("Verificá que el archivo de Excel esté cargado en GitHub.")
