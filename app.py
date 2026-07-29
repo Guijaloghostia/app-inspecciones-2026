@@ -83,23 +83,28 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 
-# --- FUNCIÓN DE GEOCODIFICACIÓN CON CACHÉ ---
+# --- FUNCIÓN DE GEOCODIFICACIÓN MULTILOCALIDAD CON CACHÉ ---
 @st.cache_data(show_spinner=False)
-def geocodificar_direcciones(
-    lista_direcciones, ciudad="Mar del Plata, Argentina"
-):
+def geocodificar_direcciones(df_direcciones):
   geolocator = Nominatim(user_agent="app_fiscalizaciones_2026")
   geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
   coordenadas = {}
-  total = len(lista_direcciones)
+  total = len(df_direcciones)
 
   progress_bar = st.progress(0)
   status_text = st.empty()
 
-  for idx, direccion in enumerate(lista_direcciones):
+  for idx, row in df_direcciones.reset_index(drop=True).iterrows():
+    direccion = row["Direccion_Corta"]
+    localidad = (
+        row["Localidad"]
+        if pd.notnull(row["Localidad"]) and str(row["Localidad"]).strip() != ""
+        else "Mar del Plata"
+    )
+
     if pd.notnull(direccion) and str(direccion).strip() != "":
-      query = f"{direccion}, {ciudad}"
+      query = f"{direccion}, {localidad}, Buenos Aires, Argentina"
       try:
         location = geocode(query)
         if location:
@@ -111,7 +116,9 @@ def geocodificar_direcciones(
 
     porcentaje = (idx + 1) / total
     progress_bar.progress(porcentaje)
-    status_text.text(f"Geocodificando {idx + 1} de {total} direcciones...")
+    status_text.text(
+        f"Geocodificando {idx + 1} de {total} ({direccion}, {localidad})..."
+    )
 
   status_text.empty()
   progress_bar.empty()
@@ -380,11 +387,10 @@ if resumen is not None:
 
     busqueda = None
 
-    # BÚSQUEDA POR CUIT O RAZÓN SOCIAL
+    # BÚSQUEDA DUAL POR CUIT O RAZÓN SOCIAL
     if busqueda_cuit_rs.strip():
       query_text = busqueda_cuit_rs.strip()
 
-      # Busca coincidencias en CUIT o Razón Social
       res_match = resumen[
           resumen["CUIT"]
           .astype(str)
@@ -493,16 +499,18 @@ if resumen is not None:
         use_container_width=True,
     )
 
-  # --- SECCIÓN 5: MAPA DE CONTROL Y CALOR ---
+  # --- SECCIÓN 5: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
   elif opcion == "🗺️ Mapa de Control":
     st.title("🗺️ Mapa de Calor de Fiscalizaciones")
     st.write(
-        "Geolocalización automática basada en las direcciones de la base de"
+        "Geolocalización automática multilocalidad basada en la base de"
         " datos."
     )
 
     if "Direccion_Corta" in resumen.columns:
-      direcciones_unicas = resumen["Direccion_Corta"].dropna().unique().tolist()
+      df_geo = resumen[["Direccion_Corta", "Localidad"]].drop_duplicates(
+          subset=["Direccion_Corta"]
+      )
 
       col_btn1, col_btn2 = st.columns([1, 2])
       with col_btn1:
@@ -511,11 +519,10 @@ if resumen is not None:
       if obtener_coords or "dicc_coords" in st.session_state:
         if "dicc_coords" not in st.session_state:
           with st.spinner(
-              "Geocodificando direcciones... Esto puede demorar la primera vez."
+              "Geocodificando direcciones por localidad... Esto puede demorar"
+              " la primera vez."
           ):
-            st.session_state["dicc_coords"] = geocodificar_direcciones(
-                direcciones_unicas
-            )
+            st.session_state["dicc_coords"] = geocodificar_direcciones(df_geo)
 
         dicc_coords = st.session_state["dicc_coords"]
 
@@ -530,7 +537,7 @@ if resumen is not None:
 
         st.success(
             f"📍 Direcciones geolocalizadas con éxito: {len(df_mapa)} de"
-            f" {len(direcciones_unicas)}"
+            f" {len(df_geo)}"
         )
 
         if not df_mapa.empty:
@@ -539,7 +546,7 @@ if resumen is not None:
 
           m = folium.Map(
               location=[lat_centro, lon_centro],
-              zoom_start=13,
+              zoom_start=10,
               tiles="OpenStreetMap",
           )
 
