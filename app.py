@@ -1,11 +1,12 @@
+import json
 import os
+import time
 import pandas as pd
 import streamlit as st
 
 # --- LIBRERÍAS PARA EL MAPA DE CALOR Y GEOLOCALIZACIÓN ---
 import folium
 from folium.plugins import HeatMap
-from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 
@@ -61,6 +62,7 @@ st.markdown(
 )
 
 DEFAULT_FILE = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
+CACHE_FILE = "coordenadas.json"
 
 # --- NAVEGACIÓN PRINCIPAL ---
 st.sidebar.title("📌 Menú Principal")
@@ -83,49 +85,84 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 
-# --- FUNCIÓN DE GEOCODIFICACIÓN MULTILOCALIDAD CON CACHÉ ---
-@st.cache_data(show_spinner=False)
-def geocodificar_direcciones(df_direcciones):
-  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026")
-  geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-
-  coordenadas = {}
-  total = len(df_direcciones)
-
-  progress_bar = st.progress(0)
-  status_text = st.empty()
-
-  for idx, row in df_direcciones.reset_index(drop=True).iterrows():
-    direccion = row["Direccion_Corta"]
-    localidad = (
-        row["Localidad"]
-        if pd.notnull(row["Localidad"]) and str(row["Localidad"]).strip() != ""
-        else "Mar del Plata"
-    )
-
-    if pd.notnull(direccion) and str(direccion).strip() != "":
-      query = f"{direccion}, {localidad}, Buenos Aires, Argentina"
-      try:
-        location = geocode(query)
-        if location:
-          coordenadas[direccion] = (location.latitude, location.longitude)
-        else:
-          coordenadas[direccion] = (None, None)
-      except Exception:
-        coordenadas[direccion] = (None, None)
-
-    porcentaje = (idx + 1) / total
-    progress_bar.progress(porcentaje)
-    status_text.text(
-        f"Geocodificando {idx + 1} de {total} ({direccion}, {localidad})..."
-    )
-
-  status_text.empty()
-  progress_bar.empty()
-  return coordenadas
+# --- MANEJO DE CACHÉ DE COORDENADAS EN DISCO ---
+def cargar_cache_coords():
+  if os.path.exists(CACHE_FILE):
+    try:
+      with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+    except Exception:
+      return {}
+  return {}
 
 
-# --- FUNCIÓN DE CARGA DE DATOS PARA BASE 2026 ---
+def guardar_cache_coords(cache):
+  try:
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+      json.dump(cache, f, ensure_ascii=False, indent=2)
+  except Exception as e:
+    st.error(f"Error al guardar caché de coordenadas: {e}")
+
+
+# --- FUNCIÓN DE GEOCODIFICACIÓN SEGURA CON PERSISTENCIA ---
+def geocodificar_direcciones_seguro(df_direcciones):
+  cache = cargar_cache_coords()
+  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026_v3", timeout=5)
+
+  pendientes = [
+      row
+      for _, row in df_direcciones.iterrows()
+      if row["Direccion_Corta"] not in cache
+  ]
+
+  total_pendientes = len(pendientes)
+
+  if total_pendientes > 0:
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for idx, row in enumerate(pendientes):
+      direccion = row["Direccion_Corta"]
+      localidad = (
+          row["Localidad"]
+          if pd.notnull(row["Localidad"]) and str(row["Localidad"]).strip() != ""
+          else "Mar del Plata"
+      )
+
+      if pd.notnull(direccion) and str(direccion).strip() != "":
+        query = f"{direccion}, {localidad}, Buenos Aires, Argentina"
+        lat, lon = None, None
+
+        for intento in range(2):
+          try:
+            location = geolocator.geocode(query)
+            if location:
+              lat, lon = location.latitude, location.longitude
+            break
+          except Exception:
+            time.sleep(1.5)
+
+        cache[direccion] = (lat, lon)
+
+      time.sleep(1.1)
+
+      porcentaje = (idx + 1) / total_pendientes
+      progress_bar.progress(porcentaje)
+      status_text.text(
+          f"Procesando nuevas direcciones: {idx + 1} de {total_pendientes}..."
+      )
+
+      if (idx + 1) % 10 == 0:
+        guardar_cache_coords(cache)
+
+    guardar_cache_coords(cache)
+    status_text.empty()
+    progress_bar.empty()
+
+  return cache
+
+
+# --- FUNCIÓN DE CARGA DE DATOS ---
 def cargar_datos(file_source):
   excel_file = pd.ExcelFile(file_source, engine="openpyxl")
 
@@ -369,9 +406,9 @@ if resumen is not None:
             use_container_width=True,
         )
 
-  # --- SECCIÓN 3: CONSULTAR FICHA POR LOCAL ---
+  # --- SECCIÓN 3: CONSULTAR FICHA / CONSOLIDADO ---
   elif opcion == "🔍 Consultar Ficha por Local":
-    st.title("🔍 Buscador Interactivo de Domicilio / Comercio")
+    st.title("🔍 Buscador Interactivo y Consolidado")
 
     col_b1, col_b2 = st.columns(2)
     with col_b1:
@@ -381,13 +418,11 @@ if resumen is not None:
       )
     with col_b2:
       busqueda_cuit_rs = st.text_input(
-          "🔍 O buscá por CUIT o Razón Social:",
+          "🔍 O buscá por CUIT o Razón Social (Consolidado):",
           placeholder="Ej: 30-12345678-9 o Nombre de Empresa...",
       )
 
-    busqueda = None
-
-    # BÚSQUEDA DUAL POR CUIT O RAZÓN SOCIAL
+    # VISTA 1: BÚSQUEDA AGRUPADA Y CONSOLIDADA POR CUIT / RAZÓN SOCIAL
     if busqueda_cuit_rs.strip():
       query_text = busqueda_cuit_rs.strip()
 
@@ -401,41 +436,87 @@ if resumen is not None:
       ]
 
       if not res_match.empty:
-        if len(res_match) == 1:
-          busqueda = res_match.iloc[0]["Direccion_Corta"]
-        else:
-          st.info(
-              f"Se encontraron {len(res_match)} coincidencias. Seleccioná una:"
-          )
-          opciones_coincidentes = dict(
-              zip(
-                  res_match["Direccion_Corta"]
-                  + " - "
-                  + res_match["Razon_Social"]
-                  + " ("
-                  + res_match["CUIT"]
-                  + ")",
-                  res_match["Direccion_Corta"],
-              )
-          )
-          seleccion = st.selectbox(
-              "Resultados de la búsqueda:", list(opciones_coincidentes.keys())
-          )
-          busqueda = opciones_coincidentes[seleccion]
+        razones_unicas = ", ".join(res_match["Razon_Social"].unique())
+        cuits_unicos = ", ".join(res_match["CUIT"].unique())
+
+        tot_locales = len(res_match)
+        tot_inspecciones = res_match["Cant_Inspecciones"].sum()
+        tot_trel = int(res_match["Total_TREL"].sum())
+        ultima_fecha = res_match["Ultima_Inspeccion"].max()
+
+        st.success(
+            f"🏢 **Consolidado Contribuyente / Empresa:** {razones_unicas}  \n🆔"
+            f" **CUIT:** `{cuits_unicos}`"
+        )
+
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("Total Locales / Domicilios", tot_locales)
+        f2.metric("Total Inspecciones Acumuladas", tot_inspecciones)
+        f3.metric("Total Trabajadores (TREL)", tot_trel)
+        f4.metric(
+            "Última Inspección Registrada",
+            (
+                str(ultima_fecha)[:10]
+                if pd.notnull(ultima_fecha)
+                else "S/D"
+            ),
+        )
+
+        st.divider()
+
+        st.subheader("📍 Domicilios y Locales de la Empresa")
+        st.dataframe(
+            res_match[[
+                "Direccion_Corta",
+                "Localidad",
+                "Cant_Inspecciones",
+                "Total_TREL",
+                "Ultimo_Estado",
+                "Prioridad",
+            ]],
+            use_container_width=True,
+        )
+
+        st.subheader("📋 Historial Completo de Inspecciones")
+        direcciones_grupo = res_match["Direccion_Corta"].tolist()
+        historial_grupo = df_raw[
+            df_raw["Direccion_Corta"].isin(direcciones_grupo)
+        ]
+
+        cols_historial = [
+            "FECHA",
+            "RAZON SOCIAL",
+            "CUIT_Clean",
+            "CALLE",
+            "Núm.",
+            "Localidad",
+            "TREL",
+            "TNR",
+            "Inspec.",
+            "Expediente",
+        ]
+        cols_presentes = [
+            c for c in cols_historial if c in historial_grupo.columns
+        ]
+
+        st.dataframe(
+            historial_grupo[cols_presentes].rename(
+                columns={"CUIT_Clean": "CUIT"}
+            ),
+            use_container_width=True,
+        )
       else:
         st.warning(
             "No se encontraron coincidencias para el CUIT o Razón Social"
             " ingresado."
         )
 
+    # VISTA 2: BÚSQUEDA PUNTUAL POR DIRECCIÓN
     elif busqueda_dir:
-      busqueda = busqueda_dir
-
-    if busqueda:
-      local = resumen[resumen["Direccion_Corta"] == busqueda].iloc[0]
+      local = resumen[resumen["Direccion_Corta"] == busqueda_dir].iloc[0]
       st.success(
-          f"📍 Ficha: **{local['Direccion_Corta']}** - {local['Razon_Social']}"
-          f" | **CUIT:** `{local['CUIT']}`"
+          f"📍 Ficha Local: **{local['Direccion_Corta']}** -"
+          f" {local['Razon_Social']} | **CUIT:** `{local['CUIT']}`"
       )
 
       f1, f2, f3, f4 = st.columns(4)
@@ -453,7 +534,7 @@ if resumen is not None:
 
       st.divider()
       st.subheader("📋 Historial de Inspecciones Registradas")
-      historial = df_raw[df_raw["Direccion_Corta"] == busqueda]
+      historial = df_raw[df_raw["Direccion_Corta"] == busqueda_dir]
 
       cols_historial = [
           "FECHA",
@@ -503,8 +584,7 @@ if resumen is not None:
   elif opcion == "🗺️ Mapa de Control":
     st.title("🗺️ Mapa de Calor de Fiscalizaciones")
     st.write(
-        "Geolocalización automática multilocalidad basada en la base de"
-        " datos."
+        "Geolocalización automática multilocalidad con persistencia de datos."
     )
 
     if "Direccion_Corta" in resumen.columns:
@@ -516,28 +596,29 @@ if resumen is not None:
       with col_btn1:
         obtener_coords = st.button("🌐 Generar / Actualizar Coordenadas")
 
-      if obtener_coords or "dicc_coords" in st.session_state:
-        if "dicc_coords" not in st.session_state:
-          with st.spinner(
-              "Geocodificando direcciones por localidad... Esto puede demorar"
-              " la primera vez."
-          ):
-            st.session_state["dicc_coords"] = geocodificar_direcciones(df_geo)
+      dicc_coords = cargar_cache_coords()
 
-        dicc_coords = st.session_state["dicc_coords"]
+      if obtener_coords:
+        with st.spinner("Procesando y almacenando coordenadas faltantes..."):
+          dicc_coords = geocodificar_direcciones_seguro(df_geo)
+          st.success("¡Coordenadas actualizadas e indexadas en el sistema!")
 
+      if dicc_coords:
         resumen["Latitud"] = resumen["Direccion_Corta"].map(
             lambda x: dicc_coords.get(x, (None, None))[0]
+            if isinstance(dicc_coords.get(x), (list, tuple))
+            else None
         )
         resumen["Longitud"] = resumen["Direccion_Corta"].map(
             lambda x: dicc_coords.get(x, (None, None))[1]
+            if isinstance(dicc_coords.get(x), (list, tuple))
+            else None
         )
 
         df_mapa = resumen.dropna(subset=["Latitud", "Longitud"])
 
-        st.success(
-            f"📍 Direcciones geolocalizadas con éxito: {len(df_mapa)} de"
-            f" {len(df_geo)}"
+        st.info(
+            f"📍 Direcciones procesadas en mapa: {len(df_mapa)} de {len(df_geo)}"
         )
 
         if not df_mapa.empty:
@@ -560,13 +641,13 @@ if resumen is not None:
           st_folium(m, width="100%", height=550)
         else:
           st.warning(
-              "No se pudieron encontrar coordenadas para las direcciones"
-              " proporcionadas."
+              "No se pudieron cargar coordenadas válidas. Presioná el botón"
+              " 'Generar / Actualizar Coordenadas'."
           )
       else:
         st.info(
-            "Presioná el botón superior para calcular las coordenadas y armar"
-            " el mapa de calor."
+            "Presioná el botón superior para calcular y guardar las coordenadas"
+            " por primera vez."
         )
     else:
       st.warning(
