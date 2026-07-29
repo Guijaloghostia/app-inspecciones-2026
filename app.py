@@ -2,6 +2,13 @@ import os
 import pandas as pd
 import streamlit as st
 
+# --- LIBRERÍAS PARA EL MAPA DE CALOR Y GEOLOCALIZACIÓN ---
+import folium
+from folium.plugins import HeatMap
+from geopy.extra.rate_limiter import RateLimiter
+from geopy.geocoders import Nominatim
+from streamlit_folium import st_folium
+
 st.set_page_config(
     page_title="Control de Refiscalización 2026",
     layout="wide",
@@ -30,25 +37,21 @@ st.markdown(
     }
 
     /* --- AGRANDAR LETRA E ÍCONOS DE LA BARRA LATERAL --- */
-    /* Texto de las opciones del menú lateral (radio buttons) */
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
         font-size: 20px !important;
         font-weight: 600 !important;
         line-height: 1.5 !important;
     }
     
-    /* Espaciado de los botones de radio en sidebar */
     [data-testid="stSidebar"] div[role="radiogroup"] label {
         padding-top: 8px !important;
         padding-bottom: 8px !important;
     }
 
-    /* Título del menú lateral */
     [data-testid="stSidebar"] h1 {
         font-size: 26px !important;
     }
 
-    /* Subtítulos del menú lateral */
     [data-testid="stSidebar"] h3 {
         font-size: 22px !important;
     }
@@ -68,6 +71,7 @@ opcion = st.sidebar.radio(
         "DM Análisis por Calle / Cuadra",
         "🔍 Consultar Ficha por Local",
         "🔴 Tablero de Prioridades",
+        "🗺️ Mapa de Control",
         "⚙️ Carga y Configuración",
     ],
 )
@@ -77,6 +81,41 @@ st.sidebar.subheader("📁 Archivo Activo")
 uploaded_file = st.sidebar.file_uploader(
     "Subir Excel alternativo:", type=["xlsx", "xls"], key="sidebar_uploader"
 )
+
+
+# --- FUNCIÓN DE GEOCODIFICACIÓN CON CACHÉ ---
+@st.cache_data(show_spinner=False)
+def geocodificar_direcciones(
+    lista_direcciones, ciudad="Mar del Plata, Argentina"
+):
+  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026")
+  geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+
+  coordenadas = {}
+  total = len(lista_direcciones)
+
+  progress_bar = st.progress(0)
+  status_text = st.empty()
+
+  for idx, direccion in enumerate(lista_direcciones):
+    if pd.notnull(direccion) and str(direccion).strip() != "":
+      query = f"{direccion}, {ciudad}"
+      try:
+        location = geocode(query)
+        if location:
+          coordenadas[direccion] = (location.latitude, location.longitude)
+        else:
+          coordenadas[direccion] = (None, None)
+      except Exception:
+        coordenadas[direccion] = (None, None)
+
+    porcentaje = (idx + 1) / total
+    progress_bar.progress(porcentaje)
+    status_text.text(f"Geocodificando {idx + 1} de {total} direcciones...")
+
+  status_text.empty()
+  progress_bar.empty()
+  return coordenadas
 
 
 # --- FUNCIÓN DE CARGA DE DATOS PARA BASE 2026 ---
@@ -334,21 +373,55 @@ if resumen is not None:
           [""] + list(resumen["Direccion_Corta"].unique()),
       )
     with col_b2:
-      busqueda_cuit = st.text_input(
-          "🔍 O buscá por número de CUIT:", placeholder="Ej: 30-..."
+      busqueda_cuit_rs = st.text_input(
+          "🔍 O buscá por CUIT o Razón Social:",
+          placeholder="Ej: 30-12345678-9 o Nombre de Empresa...",
       )
 
     busqueda = None
-    if busqueda_cuit.strip():
-      res_cuit = resumen[
+
+    # BÚSQUEDA POR CUIT O RAZÓN SOCIAL
+    if busqueda_cuit_rs.strip():
+      query_text = busqueda_cuit_rs.strip()
+
+      # Busca coincidencias en CUIT o Razón Social
+      res_match = resumen[
           resumen["CUIT"]
           .astype(str)
-          .str.contains(busqueda_cuit.strip(), case=False, na=False)
+          .str.contains(query_text, case=False, na=False)
+          | resumen["Razon_Social"]
+          .astype(str)
+          .str.contains(query_text, case=False, na=False)
       ]
-      if not res_cuit.empty:
-        busqueda = res_cuit.iloc[0]["Direccion_Corta"]
+
+      if not res_match.empty:
+        if len(res_match) == 1:
+          busqueda = res_match.iloc[0]["Direccion_Corta"]
+        else:
+          st.info(
+              f"Se encontraron {len(res_match)} coincidencias. Seleccioná una:"
+          )
+          opciones_coincidentes = dict(
+              zip(
+                  res_match["Direccion_Corta"]
+                  + " - "
+                  + res_match["Razon_Social"]
+                  + " ("
+                  + res_match["CUIT"]
+                  + ")",
+                  res_match["Direccion_Corta"],
+              )
+          )
+          seleccion = st.selectbox(
+              "Resultados de la búsqueda:", list(opciones_coincidentes.keys())
+          )
+          busqueda = opciones_coincidentes[seleccion]
       else:
-        st.warning("No se encontraron coincidencias para el CUIT ingresado.")
+        st.warning(
+            "No se encontraron coincidencias para el CUIT o Razón Social"
+            " ingresado."
+        )
+
     elif busqueda_dir:
       busqueda = busqueda_dir
 
@@ -420,7 +493,80 @@ if resumen is not None:
         use_container_width=True,
     )
 
-  # --- SECCIÓN 5: CARGA Y CONFIGURACIÓN ---
+  # --- SECCIÓN 5: MAPA DE CONTROL Y CALOR ---
+  elif opcion == "🗺️ Mapa de Control":
+    st.title("🗺️ Mapa de Calor de Fiscalizaciones")
+    st.write(
+        "Geolocalización automática basada en las direcciones de la base de"
+        " datos."
+    )
+
+    if "Direccion_Corta" in resumen.columns:
+      direcciones_unicas = resumen["Direccion_Corta"].dropna().unique().tolist()
+
+      col_btn1, col_btn2 = st.columns([1, 2])
+      with col_btn1:
+        obtener_coords = st.button("🌐 Generar / Actualizar Coordenadas")
+
+      if obtener_coords or "dicc_coords" in st.session_state:
+        if "dicc_coords" not in st.session_state:
+          with st.spinner(
+              "Geocodificando direcciones... Esto puede demorar la primera vez."
+          ):
+            st.session_state["dicc_coords"] = geocodificar_direcciones(
+                direcciones_unicas
+            )
+
+        dicc_coords = st.session_state["dicc_coords"]
+
+        resumen["Latitud"] = resumen["Direccion_Corta"].map(
+            lambda x: dicc_coords.get(x, (None, None))[0]
+        )
+        resumen["Longitud"] = resumen["Direccion_Corta"].map(
+            lambda x: dicc_coords.get(x, (None, None))[1]
+        )
+
+        df_mapa = resumen.dropna(subset=["Latitud", "Longitud"])
+
+        st.success(
+            f"📍 Direcciones geolocalizadas con éxito: {len(df_mapa)} de"
+            f" {len(direcciones_unicas)}"
+        )
+
+        if not df_mapa.empty:
+          lat_centro = df_mapa["Latitud"].mean()
+          lon_centro = df_mapa["Longitud"].mean()
+
+          m = folium.Map(
+              location=[lat_centro, lon_centro],
+              zoom_start=13,
+              tiles="OpenStreetMap",
+          )
+
+          heat_data = [
+              [row["Latitud"], row["Longitud"], row["Cant_Inspecciones"]]
+              for _, row in df_mapa.iterrows()
+          ]
+
+          HeatMap(heat_data, radius=18, blur=12, max_zoom=15).add_to(m)
+
+          st_folium(m, width="100%", height=550)
+        else:
+          st.warning(
+              "No se pudieron encontrar coordenadas para las direcciones"
+              " proporcionadas."
+          )
+      else:
+        st.info(
+            "Presioná el botón superior para calcular las coordenadas y armar"
+            " el mapa de calor."
+        )
+    else:
+      st.warning(
+          "No se encontró la columna 'Direccion_Corta' en la base de datos."
+      )
+
+  # --- SECCIÓN 6: CARGA Y CONFIGURACIÓN ---
   elif opcion == "⚙️ Carga y Configuración":
     st.title("⚙️ Carga y Actualización de Archivos")
     st.info(
