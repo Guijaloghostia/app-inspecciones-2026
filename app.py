@@ -16,11 +16,21 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- DICCIONARIO CENTRALIZADO DE INICIALES A NOMBRES COMPLETOS ---
+# --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
 MAPEO_INICIALES = {
-    "A": "Ariel",
-    "G": "Guillermo",
+    "A": "Aníbal",
+    "ARIEL": "Ariel",
     "C": "Cynthia",
+    "CINTIA": "Cynthia",
+    "CIMINO": "Cimino",
+    "F": "Fernando",
+    "FERNANDO": "Fernando",
+    "G": "Guillermo",
+    "GUILLERMO": "Guillermo",
+    "GO": "Gonzalo",
+    "H": "Hernán",
+    "P": "Pablo",
+    "RUBEN": "Rubén"
 }
 
 # --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA EN SIDEBAR ---
@@ -771,16 +781,23 @@ if resumen is not None:
       if not isinstance(cadena, str) or not cadena.strip():
         return ["SIN ASIGNAR"]
 
-      cadena_limpia = (
-          cadena.strip().upper().replace(" ", "").replace("-", "")
-      )
-
+      # Desglosa combinaciones separadas por guión o barra ('G-GO', 'C/GO', etc.)
+      partes = str(cadena).replace("/", "-").split("-")
       nombres = []
-      for letra in cadena_limpia:
-        if letra in MAPEO_INICIALES:
-          nombres.append(MAPEO_INICIALES[letra])
+
+      for parte in partes:
+        p_limpia = parte.strip().upper()
+        
+        # Si la parte entera está directamente en el mapa (ej. CIMINO, ARIEL, GO)
+        if p_limpia in MAPEO_INICIALES:
+          nombres.append(MAPEO_INICIALES[p_limpia])
         else:
-          nombres.append(f"Inspector ({letra})")
+          # Si son iniciales pegadas (ej. 'AG', 'CG'), analiza letra por letra
+          for letra in p_limpia:
+            if letra in MAPEO_INICIALES:
+              nombres.append(MAPEO_INICIALES[letra])
+            elif letra:
+              nombres.append(f"Inspector ({letra})")
 
       return list(set(nombres)) if nombres else ["SIN ASIGNAR"]
 
