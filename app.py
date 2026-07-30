@@ -19,6 +19,7 @@ st.set_page_config(
 # --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
 MAPEO_INICIALES = {
     "A": "Aníbal",
+    "AR": "Ariel",
     "ARIEL": "Ariel",
     "C": "Cynthia",
     "CINTIA": "Cynthia",
@@ -30,7 +31,8 @@ MAPEO_INICIALES = {
     "GO": "Gonzalo",
     "H": "Hernán",
     "P": "Pablo",
-    "RUBEN": "Rubén"
+    "R": "Rubén",
+    "RUBEN": "Rubén",
 }
 
 # --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA EN SIDEBAR ---
@@ -772,32 +774,38 @@ if resumen is not None:
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
-        "El sistema desglosa las iniciales de las parejas inspectivas (ej. AG"
-        " -> Ariel y Guillermo / CG -> Cynthia y Guillermo) para contabilizar"
-        " las métricas individuales de cada inspector."
+        "El sistema desglosa las iniciales de las parejas inspectivas (ej. AR"
+        " -> Ariel / AG -> Aníbal y Guillermo / CG -> Cynthia y Guillermo) para"
+        " contabilizar las métricas individuales de cada inspector."
     )
 
     def desglosar_inspectores(cadena):
       if not isinstance(cadena, str) or not cadena.strip():
         return ["SIN ASIGNAR"]
 
-      # Desglosa combinaciones separadas por guión o barra ('G-GO', 'C/GO', etc.)
       partes = str(cadena).replace("/", "-").split("-")
       nombres = []
 
       for parte in partes:
         p_limpia = parte.strip().upper()
-        
-        # Si la parte entera está directamente en el mapa (ej. CIMINO, ARIEL, GO)
+
         if p_limpia in MAPEO_INICIALES:
           nombres.append(MAPEO_INICIALES[p_limpia])
         else:
-          # Si son iniciales pegadas (ej. 'AG', 'CG'), analiza letra por letra
-          for letra in p_limpia:
-            if letra in MAPEO_INICIALES:
-              nombres.append(MAPEO_INICIALES[letra])
-            elif letra:
-              nombres.append(f"Inspector ({letra})")
+          i = 0
+          while i < len(p_limpia):
+            if (
+                i + 2 <= len(p_limpia)
+                and p_limpia[i : i + 2] in MAPEO_INICIALES
+            ):
+              nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
+              i += 2
+            elif p_limpia[i] in MAPEO_INICIALES:
+              nombres.append(MAPEO_INICIALES[p_limpia[i]])
+              i += 1
+            else:
+              nombres.append(f"Inspector ({p_limpia[i]})")
+              i += 1
 
       return list(set(nombres)) if nombres else ["SIN ASIGNAR"]
 
@@ -883,7 +891,7 @@ if resumen is not None:
       d1, d2, d3, d4 = st.columns(4)
       d1.metric("Inspecciones Intervenidas", len(df_inspector))
       d2.metric(
-          "Locales Distintos Visito",
+          "Locales Distintos Visitó",
           df_inspector["Direccion_Corta"].nunique(),
       )
       d3.metric("Total TREL Relevado", int(df_inspector["TREL"].sum()))
