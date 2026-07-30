@@ -16,8 +16,61 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ==============================================================================
+# --- SISTEMA DE AUTENTICACIÓN (LOGIN CON USUARIO Y CONTRASEÑA) ---
+# ==============================================================================
+def check_password():
+    """Retorna True si el usuario ingresó las credenciales correctas."""
+
+    def password_entered():
+        """Verifica si el usuario y la clave coinciden con los secretos guardados."""
+        username = st.session_state.get("username", "")
+        password = st.session_state.get("password", "")
+
+        # Verifica contra los credenciales guardados en Secrets (o valores por defecto de prueba)
+        allowed_users = st.secrets.get("passwords", {"admin": "1234"})
+
+        if username in allowed_users and allowed_users[username] == password:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # No guardamos la clave en memoria
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # Primera vez que entra, muestra el formulario de Login
+        st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
+        st.text_input("Usuario", key="username")
+        st.text_input("Contraseña", type="password", key="password")
+        st.button("Iniciar Sesión", on_click=password_entered)
+        return False
+    elif not st.session_state["password_correct"]:
+        # Si falló el login
+        st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
+        st.text_input("Usuario", key="username")
+        st.text_input("Contraseña", type="password", key="password")
+        st.button("Iniciar Sesión", on_click=password_entered)
+        st.error("😕 Usuario o contraseña incorrectos.")
+        return False
+    else:
+        # Credenciales correctas
+        return True
+
+# Si el usuario NO está autenticado, detiene la ejecución del resto del código
+if not check_password():
+    st.stop()
+
+# Botón para cerrar sesión en la barra lateral
+if st.sidebar.button("🚪 Cerrar Sesión"):
+    st.session_state["password_correct"] = False
+    st.rerun()
+
+# ==============================================================================
+# --- A PARTIR DE ACÁ SIGUE TODO TU CÓDIGO NORMAL ---
+# ==============================================================================
+
 # --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
-MAPEO_INICIALES = {
+MAPEO_INICIALES = { ...
     "A": "Aníbal",
     "AR": "Ariel",
     "ARIEL": "Ariel",
