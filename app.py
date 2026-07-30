@@ -30,11 +30,12 @@ MAPEO_INICIALES = {
     "GUILLERMO": "Guillermo",
     "GO": "Gonzalo",
     "H": "Hernán",
+    "L": "Luciano",
+    "LUCIANO": "Luciano",
     "P": "Pablo",
     "R": "Rubén",
     "RUBEN": "Rubén",
 }
-
 # --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA EN SIDEBAR ---
 st.markdown(
     """
@@ -778,36 +779,44 @@ if resumen is not None:
         " -> Ariel / AG -> Aníbal y Guillermo / CG -> Cynthia y Guillermo) para"
         " contabilizar las métricas individuales de cada inspector."
     )
+def desglosar_inspectores(cadena):
+  if not isinstance(cadena, str) or not cadena.strip():
+    return ["Otros / Sin Identificar"]
 
-    def desglosar_inspectores(cadena):
-      if not isinstance(cadena, str) or not cadena.strip():
-        return ["SIN ASIGNAR"]
+  # Separa por guiones, barras o espacios
+  partes = str(cadena).replace("/", "-").replace(" ", "-").split("-")
+  nombres = []
 
-      partes = str(cadena).replace("/", "-").split("-")
-      nombres = []
+  for parte in partes:
+    p_limpia = parte.strip().upper()
+    if not p_limpia:
+      continue
 
-      for parte in partes:
-        p_limpia = parte.strip().upper()
-
-        if p_limpia in MAPEO_INICIALES:
-          nombres.append(MAPEO_INICIALES[p_limpia])
+    # 1. Si el código completo o palabra está en el mapa
+    if p_limpia in MAPEO_INICIALES:
+      nombres.append(MAPEO_INICIALES[p_limpia])
+    else:
+      # 2. Recorrido letra por letra
+      i = 0
+      while i < len(p_limpia):
+        # Probar si las próximas 2 letras son un código conocido (ej. GO, AR)
+        if (
+            i + 2 <= len(p_limpia)
+            and p_limpia[i : i + 2] in MAPEO_INICIALES
+        ):
+          nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
+          i += 2
+        # Probar si la letra individual es conocida (ej. A, G, L, C)
+        elif p_limpia[i] in MAPEO_INICIALES:
+          nombres.append(MAPEO_INICIALES[p_limpia[i]])
+          i += 1
         else:
-          i = 0
-          while i < len(p_limpia):
-            if (
-                i + 2 <= len(p_limpia)
-                and p_limpia[i : i + 2] in MAPEO_INICIALES
-            ):
-              nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
-              i += 2
-            elif p_limpia[i] in MAPEO_INICIALES:
-              nombres.append(MAPEO_INICIALES[p_limpia[i]])
-              i += 1
-            else:
-              nombres.append(f"Inspector ({p_limpia[i]})")
-              i += 1
+          # Cualquier letra desconocida (N, B, I, O, Z, U, E, etc.) va a "Otros"
+          nombres.append("Otros / Sin Identificar")
+          i += 1
 
-      return list(set(nombres)) if nombres else ["SIN ASIGNAR"]
+  # Elimina duplicados si en una misma acta aparecían dos letras no identificadas
+  return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
     # Explotar la base duplicando filas por cada integrante de la pareja inspectiva
     df_exp = df_raw.copy()
