@@ -36,6 +36,7 @@ MAPEO_INICIALES = {
     "R": "Rubén",
     "RUBEN": "Rubén",
 }
+
 # --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA EN SIDEBAR ---
 st.markdown(
     """
@@ -268,10 +269,10 @@ def cargar_datos(file_source):
   )
   if col_inspector:
     df["Inspector_Clean"] = (
-        df[col_inspector].fillna("SIN ASIGNAR").astype(str).str.strip()
+        df[col_inspector].fillna("Otros / Sin Identificar").astype(str).str.strip()
     )
   else:
-    df["Inspector_Clean"] = "SIN ASIGNAR"
+    df["Inspector_Clean"] = "Otros / Sin Identificar"
 
   agg_dict = {
       "Calle_Nombre": ("Calle", "first"),
@@ -771,54 +772,54 @@ if resumen is not None:
           use_container_width=True,
       )
 
-  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS) ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS Y TRÍOS) ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
-        "El sistema desglosa las iniciales de las parejas inspectivas (ej. AR"
-        " -> Ariel / AG -> Aníbal y Guillermo / CG -> Cynthia y Guillermo) para"
-        " contabilizar las métricas individuales de cada inspector."
+        "El sistema desglosa cada combinación o pareja/trío (ej. AG -> Aníbal y"
+        " Guillermo / CG -> Cynthia y Guillermo) asignándole 1 punto completo"
+        " de la inspección a cada uno de los participantes."
     )
-def desglosar_inspectores(cadena):
-  if not isinstance(cadena, str) or not cadena.strip():
-    return ["Otros / Sin Identificar"]
 
-  # Separa por guiones, barras o espacios
-  partes = str(cadena).replace("/", "-").replace(" ", "-").split("-")
-  nombres = []
+    def desglosar_inspectores(cadena):
+      if not isinstance(cadena, str) or not cadena.strip():
+        return ["Otros / Sin Identificar"]
 
-  for parte in partes:
-    p_limpia = parte.strip().upper()
-    if not p_limpia:
-      continue
+      # Separa por guiones, barras o espacios
+      partes = str(cadena).replace("/", "-").replace(" ", "-").split("-")
+      nombres = []
 
-    # 1. Si el código completo o palabra está en el mapa
-    if p_limpia in MAPEO_INICIALES:
-      nombres.append(MAPEO_INICIALES[p_limpia])
-    else:
-      # 2. Recorrido letra por letra
-      i = 0
-      while i < len(p_limpia):
-        # Probar si las próximas 2 letras son un código conocido (ej. GO, AR)
-        if (
-            i + 2 <= len(p_limpia)
-            and p_limpia[i : i + 2] in MAPEO_INICIALES
-        ):
-          nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
-          i += 2
-        # Probar si la letra individual es conocida (ej. A, G, L, C)
-        elif p_limpia[i] in MAPEO_INICIALES:
-          nombres.append(MAPEO_INICIALES[p_limpia[i]])
-          i += 1
+      for parte in partes:
+        p_limpia = parte.strip().upper()
+        if not p_limpia:
+          continue
+
+        # 1. Si el código exacto está en el mapa (ej. CIMINO, ARIEL, CINTIA, LUCIANO)
+        if p_limpia in MAPEO_INICIALES:
+          nombres.append(MAPEO_INICIALES[p_limpia])
         else:
-          # Cualquier letra desconocida (N, B, I, O, Z, U, E, etc.) va a "Otros"
-          nombres.append("Otros / Sin Identificar")
-          i += 1
+          # 2. Desglose carácter por carácter para iniciales (ej. AG, CG, ARG, L)
+          i = 0
+          while i < len(p_limpia):
+            # Probar si las próximas 2 letras son un código conocido (ej. GO, AR)
+            if (
+                i + 2 <= len(p_limpia)
+                and p_limpia[i : i + 2] in MAPEO_INICIALES
+            ):
+              nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
+              i += 2
+            # Probar si la letra individual es conocida (ej. A, G, L, C, F, P, H, R)
+            elif p_limpia[i] in MAPEO_INICIALES:
+              nombres.append(MAPEO_INICIALES[p_limpia[i]])
+              i += 1
+            else:
+              # Cualquier otra inicial no identificada (N, B, I, O, Z, U, E, etc.) va a Otros
+              nombres.append("Otros / Sin Identificar")
+              i += 1
 
-  # Elimina duplicados si en una misma acta aparecían dos letras no identificadas
-  return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
+      return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
-    # Explotar la base duplicando filas por cada integrante de la pareja inspectiva
+    # Duplicar filas para que cada integrante sume la inspección completa a su historial individual
     df_exp = df_raw.copy()
     df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
         desglosar_inspectores
@@ -827,7 +828,7 @@ def desglosar_inspectores(cadena):
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
 
-    # Agrupación individual
+    # Agrupación por inspector individual
     ranking_df = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
@@ -926,7 +927,7 @@ def desglosar_inspectores(cadena):
           df_inspector[cols_presentes_insp].rename(
               columns={
                   "CUIT_Clean": "CUIT",
-                  "Inspector_Clean": "Pareja Inspectiva Original",
+                  "Inspector_Clean": "Equipo Inspectivo Registrado",
               }
           ),
           use_container_width=True,
