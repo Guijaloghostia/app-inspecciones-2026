@@ -16,7 +16,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA AGRANDADA EN SIDEBAR ---
+# --- DICCIONARIO CENTRALIZADO DE INICIALES A NOMBRES COMPLETOS ---
+MAPEO_INICIALES = {
+    "A": "Ariel",
+    "G": "Guillermo",
+    "C": "Cynthia",
+}
+
+# --- ESTILOS CSS INTERACTIVOS Y TIPOGRAFÍA EN SIDEBAR ---
 st.markdown(
     """
     <style>
@@ -110,7 +117,7 @@ def guardar_cache_coords(cache):
 
 def geocodificar_direcciones_seguro(df_direcciones):
   cache = cargar_cache_coords()
-  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026_v5", timeout=5)
+  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026_v7", timeout=5)
 
   pendientes = [
       row
@@ -435,8 +442,8 @@ if resumen is not None:
   elif opcion == "🔄 Comparativa 2025 vs 2026":
     st.title("🔄 Cruce de Control Interanual (2025 vs 2026)")
     st.write(
-        "Detectá qué locales fiscalizados en 2025 aún no fueron visitados en"
-        " 2026 para planificar el recorrido por calle y altura."
+        "Detectá la situación de cada local fiscalizado en 2025 respecto al"
+        " control actual de 2026."
     )
 
     if resumen_2025 is not None:
@@ -454,8 +461,10 @@ if resumen is not None:
       if calle_comp:
         r25 = resumen_2025[
             resumen_2025["Calle_Nombre"].str.upper() == calle_comp.upper()
-        ]
-        r26 = resumen[resumen["Calle_Nombre"].str.upper() == calle_comp.upper()]
+        ].copy()
+        r26 = resumen[
+            resumen["Calle_Nombre"].str.upper() == calle_comp.upper()
+        ].copy()
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Locales Fiscalizados 2025", len(r25))
@@ -481,70 +490,120 @@ if resumen is not None:
 
         st.divider()
 
-        modo_vista = st.radio(
-            "Ver lista detallada de:",
-            [
-                "🔴 Locales 2025 pendientes en 2026 (PRIORIDAD)",
-                "🟢 Inspeccionados en ambos años",
-                "🔵 Nuevos en 2026",
-            ],
-            horizontal=True,
+        r25_sub = r25[[
+            "Direccion_Corta",
+            "Razon_Social",
+            "CUIT",
+            "Cuadra_Texto",
+            "Cant_Inspecciones",
+            "Ultimo_Estado",
+        ]].rename(
+            columns={
+                "Cant_Inspecciones": "Insp_2025",
+                "Ultimo_Estado": "Estado_2025",
+            }
         )
 
-        if "🔴" in modo_vista:
-          st.subheader(f"🔴 Locales de {calle_comp} pendientes de control 2026")
-          df_pend = r25[r25["Direccion_Corta"].isin(faltantes)].copy()
+        r26_sub = r26[[
+            "Direccion_Corta",
+            "Razon_Social",
+            "CUIT",
+            "Cuadra_Texto",
+            "Cant_Inspecciones",
+            "Ultimo_Estado",
+        ]].rename(
+            columns={
+                "Cant_Inspecciones": "Insp_2026",
+                "Ultimo_Estado": "Estado_2026",
+            }
+        )
+
+        merged = pd.merge(
+            r25_sub,
+            r26_sub,
+            on=["Direccion_Corta"],
+            how="outer",
+            suffixes=("_2025", "_2026"),
+        )
+
+        merged["Razon_Social"] = merged["Razon_Social_2026"].fillna(
+            merged["Razon_Social_2025"]
+        )
+        merged["CUIT"] = merged["CUIT_2026"].fillna(merged["CUIT_2025"])
+        merged["Cuadra_Texto"] = merged["Cuadra_Texto_2026"].fillna(
+            merged["Cuadra_Texto_2025"]
+        )
+
+        merged["Insp_2025"] = merged["Insp_2025"].fillna(0).astype(int)
+        merged["Insp_2026"] = merged["Insp_2026"].fillna(0).astype(int)
+        merged["Estado_2025"] = merged["Estado_2025"].fillna("-")
+        merged["Estado_2026"] = merged["Estado_2026"].fillna("-")
+
+        def categorizar_estado(row):
+          if row["Insp_2025"] > 0 and row["Insp_2026"] == 0:
+            return "🔴 PENDIENTE 2026"
+          elif row["Insp_2025"] > 0 and row["Insp_2026"] > 0:
+            return "🟢 CONTROLADO EN AMBOS AÑOS"
+          else:
+            return "🔵 NUEVO EN 2026"
+
+        merged["Estado Interanual"] = merged.apply(categorizar_estado, axis=1)
+
+        cols_orden = [
+            "Estado Interanual",
+            "Direccion_Corta",
+            "Razon_Social",
+            "CUIT",
+            "Insp_2025",
+            "Insp_2026",
+            "Estado_2025",
+            "Estado_2026",
+        ]
+
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🔴 Pendientes 2026",
+            "🟢 Controlados en Ambos Años",
+            "🔵 Nuevos en 2026",
+            "📋 Vista Unificada (Todos)",
+        ])
+
+        with tab1:
+          st.subheader(
+              f"🔴 Locales de {calle_comp} inspeccionados en 2025 pero NO en"
+              " 2026"
+          )
+          df_p = merged[
+              merged["Estado Interanual"] == "🔴 PENDIENTE 2026"
+          ].sort_values(by="Insp_2025", ascending=False)
+          st.dataframe(df_p[cols_orden], use_container_width=True)
+
+        with tab2:
+          st.subheader(
+              f"🟢 Locales de {calle_comp} con inspecciones en 2025 y 2026"
+          )
+          df_c = merged[
+              merged["Estado Interanual"] == "🟢 CONTROLADO EN AMBOS AÑOS"
+          ].sort_values(by="Insp_2026", ascending=False)
+          st.dataframe(df_c[cols_orden], use_container_width=True)
+
+        with tab3:
+          st.subheader(f"🔵 Locales nuevos relevados en {calle_comp} durante 2026")
+          df_n = merged[
+              merged["Estado Interanual"] == "🔵 NUEVO EN 2026"
+          ].sort_values(by="Insp_2026", ascending=False)
+          st.dataframe(df_n[cols_orden], use_container_width=True)
+
+        with tab4:
+          st.subheader(
+              f"📋 Todos los locales registrados en {calle_comp} (2025 / 2026)"
+          )
           st.dataframe(
-              df_pend[[
-                  "Direccion_Corta",
-                  "Razon_Social",
-                  "CUIT",
-                  "Cuadra_Texto",
-                  "Cant_Inspecciones",
-                  "Ultimo_Estado",
-              ]].rename(columns={"Cant_Inspecciones": "Inspecciones en 2025"}),
+              merged[cols_orden].sort_values(
+                  by="Estado Interanual", ascending=True
+              ),
               use_container_width=True,
           )
 
-        elif "🟢" in modo_vista:
-          st.subheader(f"🟢 Locales de {calle_comp} con control en ambos años")
-          df_ambos_25 = (
-              r25[r25["Direccion_Corta"].isin(ambos)][[
-                  "Direccion_Corta",
-                  "Cant_Inspecciones",
-              ]]
-              .rename(columns={"Cant_Inspecciones": "Insp 2025"})
-              .set_index("Direccion_Corta")
-          )
-          df_ambos_26 = (
-              r26[r26["Direccion_Corta"].isin(ambos)][[
-                  "Direccion_Corta",
-                  "Razon_Social",
-                  "CUIT",
-                  "Cant_Inspecciones",
-                  "Ultimo_Estado",
-              ]]
-              .rename(columns={"Cant_Inspecciones": "Insp 2026"})
-              .set_index("Direccion_Corta")
-          )
-
-          df_cruce = df_ambos_26.join(df_ambos_25).reset_index()
-          st.dataframe(df_cruce, use_container_width=True)
-
-        elif "🔵" in modo_vista:
-          st.subheader(f"🔵 Locales nuevos inspeccionados en 2026")
-          df_nuev = r26[r26["Direccion_Corta"].isin(nuevos_2026)].copy()
-          st.dataframe(
-              df_nuev[[
-                  "Direccion_Corta",
-                  "Razon_Social",
-                  "CUIT",
-                  "Cuadra_Texto",
-                  "Cant_Inspecciones",
-                  "Ultimo_Estado",
-              ]],
-              use_container_width=True,
-          )
     else:
       st.warning(
           f"No se encontró el archivo fijo `{DEFAULT_FILE_2025}` en la carpeta"
@@ -699,16 +758,44 @@ if resumen is not None:
           use_container_width=True,
       )
 
-  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS) ---
   elif opcion == "📋 Ranking de Inspectores":
-    st.title("📋 Ranking y Desempeño de Inspectores (2026)")
+    st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
-        "Resumen consolidado de inspecciones, locales fiscalizados,"
-        " trabajadores relevados e irregularidades detectadas por inspector."
+        "El sistema desglosa las iniciales de las parejas inspectivas (ej. AG"
+        " -> Ariel y Guillermo / CG -> Cynthia y Guillermo) para contabilizar"
+        " las métricas individuales de cada inspector."
     )
 
+    def desglosar_inspectores(cadena):
+      if not isinstance(cadena, str) or not cadena.strip():
+        return ["SIN ASIGNAR"]
+
+      cadena_limpia = (
+          cadena.strip().upper().replace(" ", "").replace("-", "")
+      )
+
+      nombres = []
+      for letra in cadena_limpia:
+        if letra in MAPEO_INICIALES:
+          nombres.append(MAPEO_INICIALES[letra])
+        else:
+          nombres.append(f"Inspector ({letra})")
+
+      return list(set(nombres)) if nombres else ["SIN ASIGNAR"]
+
+    # Explotar la base duplicando filas por cada integrante de la pareja inspectiva
+    df_exp = df_raw.copy()
+    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
+        desglosar_inspectores
+    )
+    df_explotado = df_exp.explode("Inspectores_Lista").rename(
+        columns={"Inspectores_Lista": "Inspector_Individual"}
+    )
+
+    # Agrupación individual
     ranking_df = (
-        df_raw.groupby("Inspector_Clean")
+        df_explotado.groupby("Inspector_Individual")
         .agg(
             Total_Inspecciones=("Direccion_Corta", "count"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
@@ -723,11 +810,11 @@ if resumen is not None:
     ).round(1)
     ranking_df = ranking_df.sort_values(
         by="Total_Inspecciones", ascending=False
-    ).rename(columns={"Inspector_Clean": "Inspector"})
+    ).rename(columns={"Inspector_Individual": "Inspector"})
 
-    # Métricas Generales de Inspección
+    # Métricas Generales
     i1, i2, i3, i4 = st.columns(4)
-    i1.metric("Inspectores Activos", len(ranking_df))
+    i1.metric("Inspectores Identificados", len(ranking_df))
     i2.metric(
         "Prom. Inspecciones p/ Inspector",
         f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
@@ -742,7 +829,7 @@ if resumen is not None:
     col_rank_tabla, col_rank_chart = st.columns([1.2, 1])
 
     with col_rank_tabla:
-      st.subheader("🏆 Tabla Posiciones por Cantidad de Inspecciones")
+      st.subheader("🏆 Posiciones Individuales")
       st.dataframe(
           ranking_df[[
               "Inspector",
@@ -763,26 +850,27 @@ if resumen is not None:
 
     st.divider()
 
-    # Filtro detallado por Inspector seleccionado
-    st.subheader("🔍 Detalle de Actas por Inspector")
+    # Ficha individual
+    st.subheader("🔍 Ficha y Detalle de Actas por Inspector")
     inspectores_lista = sorted(ranking_df["Inspector"].unique())
     inspector_sel = st.selectbox(
-        "Seleccioná un inspector para ver su historial completo:",
+        "Seleccioná un inspector para ver sus intervenciones:",
         [""] + inspectores_lista,
     )
 
     if inspector_sel:
-      df_inspector = df_raw[df_raw["Inspector_Clean"] == inspector_sel]
+      df_inspector = df_explotado[
+          df_explotado["Inspector_Individual"] == inspector_sel
+      ]
 
       d1, d2, d3, d4 = st.columns(4)
-      d1.metric("Inspecciones Totales", len(df_inspector))
+      d1.metric("Inspecciones Intervenidas", len(df_inspector))
       d2.metric(
-          "Locales Distintos Visito", df_inspector["Direccion_Corta"].nunique()
+          "Locales Distintos Visito",
+          df_inspector["Direccion_Corta"].nunique(),
       )
-      d3.metric("Total TREL", int(df_inspector["TREL"].sum()))
-      d4.metric(
-          "Irregularidades", df_inspector["Es_Irregular"].sum()
-      )
+      d3.metric("Total TREL Relevado", int(df_inspector["TREL"].sum()))
+      d4.metric("Irregularidades", df_inspector["Es_Irregular"].sum())
 
       cols_hist_insp = [
           "FECHA",
@@ -793,6 +881,7 @@ if resumen is not None:
           "Localidad",
           "TREL",
           "TNR",
+          "Inspector_Clean",
           "Expediente",
       ]
       cols_presentes_insp = [
@@ -801,7 +890,10 @@ if resumen is not None:
 
       st.dataframe(
           df_inspector[cols_presentes_insp].rename(
-              columns={"CUIT_Clean": "CUIT"}
+              columns={
+                  "CUIT_Clean": "CUIT",
+                  "Inspector_Clean": "Pareja Inspectiva Original",
+              }
           ),
           use_container_width=True,
       )
