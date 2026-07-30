@@ -20,7 +20,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Estilos generales para métricas y botones */
     .metric-card {
         background-color: #f8f9fa;
         border-left: 5px solid #d9534f;
@@ -37,7 +36,7 @@ st.markdown(
         font-weight: bold;
     }
 
-    /* --- AGRANDAR LETRA E ÍCONOS DE LA BARRA LATERAL --- */
+    /* AGRANDAR LETRA EN BARRA LATERAL */
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
         font-size: 20px !important;
         font-weight: 600 !important;
@@ -61,7 +60,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DEFAULT_FILE = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
+DEFAULT_FILE_2026 = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
+DEFAULT_FILE_2025 = "04-BASE FISCALIZACIONES POR DOMICILIO 2025.xlsx"
 CACHE_FILE = "coordenadas.json"
 
 # --- NAVEGACIÓN PRINCIPAL ---
@@ -71,7 +71,9 @@ opcion = st.sidebar.radio(
     [
         "🏠 Dashboard General",
         "DM Análisis por Calle / Cuadra",
+        "🔄 Comparativa 2025 vs 2026",
         "🔍 Consultar Ficha por Local",
+        "📋 Ranking de Inspectores",
         "🔴 Tablero de Prioridades",
         "🗺️ Mapa de Control",
         "⚙️ Carga y Configuración",
@@ -79,13 +81,15 @@ opcion = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.subheader("📁 Archivo Activo")
-uploaded_file = st.sidebar.file_uploader(
-    "Subir Excel alternativo:", type=["xlsx", "xls"], key="sidebar_uploader"
+st.sidebar.subheader("📁 Base 2026 (Dinámica)")
+uploaded_file_2026 = st.sidebar.file_uploader(
+    "Subir Excel 2026 alternativo:",
+    type=["xlsx", "xls"],
+    key="uploader_2026",
 )
 
 
-# --- MANEJO DE CACHÉ DE COORDENADAS EN DISCO ---
+# --- MANEJO DE CACHÉ DE COORDENADAS ---
 def cargar_cache_coords():
   if os.path.exists(CACHE_FILE):
     try:
@@ -104,17 +108,15 @@ def guardar_cache_coords(cache):
     st.error(f"Error al guardar caché de coordenadas: {e}")
 
 
-# --- FUNCIÓN DE GEOCODIFICACIÓN SEGURA CON PERSISTENCIA ---
 def geocodificar_direcciones_seguro(df_direcciones):
   cache = cargar_cache_coords()
-  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026_v3", timeout=5)
+  geolocator = Nominatim(user_agent="app_fiscalizaciones_2026_v5", timeout=5)
 
   pendientes = [
       row
       for _, row in df_direcciones.iterrows()
       if row["Direccion_Corta"] not in cache
   ]
-
   total_pendientes = len(pendientes)
 
   if total_pendientes > 0:
@@ -145,7 +147,6 @@ def geocodificar_direcciones_seguro(df_direcciones):
         cache[direccion] = (lat, lon)
 
       time.sleep(1.1)
-
       porcentaje = (idx + 1) / total_pendientes
       progress_bar.progress(porcentaje)
       status_text.text(
@@ -162,7 +163,7 @@ def geocodificar_direcciones_seguro(df_direcciones):
   return cache
 
 
-# --- FUNCIÓN DE CARGA DE DATOS ---
+# --- FUNCIÓN DE CARGA Y NORMALIZACIÓN DE BASES ---
 def cargar_datos(file_source):
   excel_file = pd.ExcelFile(file_source, engine="openpyxl")
 
@@ -235,6 +236,23 @@ def cargar_datos(file_source):
   else:
     df["Fecha_Clean"] = pd.NaT
 
+  # Columna de Inspector
+  col_inspector = (
+      "Inspec."
+      if "Inspec." in df.columns
+      else (
+          "INSPECTOR"
+          if "INSPECTOR" in df.columns
+          else ("Inspector" if "Inspector" in df.columns else None)
+      )
+  )
+  if col_inspector:
+    df["Inspector_Clean"] = (
+        df[col_inspector].fillna("SIN ASIGNAR").astype(str).str.strip()
+    )
+  else:
+    df["Inspector_Clean"] = "SIN ASIGNAR"
+
   agg_dict = {
       "Calle_Nombre": ("Calle", "first"),
       "Cuadra_Texto": ("Cuadra_Texto", "first"),
@@ -273,21 +291,33 @@ def cargar_datos(file_source):
   return df, resumen
 
 
+# --- CARGA BASE 2026 ---
 df_raw, resumen = None, None
+file_2026 = (
+    uploaded_file_2026
+    if uploaded_file_2026
+    else (DEFAULT_FILE_2026 if os.path.exists(DEFAULT_FILE_2026) else None)
+)
 
-file_to_process = None
-if uploaded_file is not None:
-  file_to_process = uploaded_file
-  st.sidebar.success("Usando archivo subido")
-elif os.path.exists(DEFAULT_FILE):
-  file_to_process = DEFAULT_FILE
-  st.sidebar.info("Usando base predeterminada 2026")
-
-if file_to_process is not None:
+if file_2026:
   try:
-    df_raw, resumen = cargar_datos(file_to_process)
+    df_raw, resumen = cargar_datos(file_2026)
   except Exception as e:
-    st.error(f"Error cargando la base de datos: {e}")
+    st.error(f"Error cargando Base 2026: {e}")
+
+
+# --- CARGA BASE 2025 (FIJA EN CACHÉ) ---
+@st.cache_data(show_spinner=False)
+def cargar_base_2025_fija(path):
+  if os.path.exists(path):
+    try:
+      return cargar_datos(path)
+    except Exception:
+      return None, None
+  return None, None
+
+
+df_raw_2025, resumen_2025 = cargar_base_2025_fija(DEFAULT_FILE_2025)
 
 if resumen is not None:
 
@@ -333,10 +363,7 @@ if resumen is not None:
   # --- SECCIÓN 2: ANÁLISIS POR CALLE / CUADRA ---
   elif opcion == "DM Análisis por Calle / Cuadra":
     st.title("DM Control por Calle y Cuadras")
-    st.write(
-        "Identificá qué cuadras o calles tienen sobreinspección y cuáles faltan"
-        " recorrer."
-    )
+    st.write("Identificá qué cuadras o calles tienen sobreinspección.")
 
     lista_calles = sorted(
         [c for c in resumen["Calle_Nombre"].unique() if str(c).strip() != ""]
@@ -358,7 +385,6 @@ if resumen is not None:
       )
 
       st.divider()
-
       col_cuadra, col_locales = st.columns([1, 1.2])
 
       with col_cuadra:
@@ -373,7 +399,6 @@ if resumen is not None:
             .reset_index()
             .sort_values(by="Inspecciones", ascending=False)
         )
-
         st.dataframe(resumen_cuadra, use_container_width=True)
 
       with col_locales:
@@ -406,7 +431,127 @@ if resumen is not None:
             use_container_width=True,
         )
 
-  # --- SECCIÓN 3: CONSULTAR FICHA / CONSOLIDADO ---
+  # --- SECCIÓN 3: COMPARATIVA INTERANUAL 2025 vs 2026 ---
+  elif opcion == "🔄 Comparativa 2025 vs 2026":
+    st.title("🔄 Cruce de Control Interanual (2025 vs 2026)")
+    st.write(
+        "Detectá qué locales fiscalizados en 2025 aún no fueron visitados en"
+        " 2026 para planificar el recorrido por calle y altura."
+    )
+
+    if resumen_2025 is not None:
+      all_calles = sorted(
+          list(
+              set(resumen["Calle_Nombre"].unique()).union(
+                  set(resumen_2025["Calle_Nombre"].unique())
+              )
+          )
+      )
+      calle_comp = st.selectbox(
+          "Seleccioná una Calle para comparar:", [""] + all_calles
+      )
+
+      if calle_comp:
+        r25 = resumen_2025[
+            resumen_2025["Calle_Nombre"].str.upper() == calle_comp.upper()
+        ]
+        r26 = resumen[resumen["Calle_Nombre"].str.upper() == calle_comp.upper()]
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Locales Fiscalizados 2025", len(r25))
+        k2.metric("Locales Fiscalizados 2026", len(r26))
+        k3.metric("Inspecciones Totales 2025", r25["Cant_Inspecciones"].sum())
+        k4.metric("Inspecciones Totales 2026", r26["Cant_Inspecciones"].sum())
+
+        st.divider()
+
+        dirs_2025 = set(r25["Direccion_Corta"].unique())
+        dirs_2026 = set(r26["Direccion_Corta"].unique())
+
+        faltantes = dirs_2025 - dirs_2026
+        ambos = dirs_2025.intersection(dirs_2026)
+        nuevos_2026 = dirs_2026 - dirs_2025
+
+        c1, c2, c3 = st.columns(3)
+        c1.error(
+            f"🔴 **Faltan Inspeccionar en 2026:** {len(faltantes)} locales"
+        )
+        c2.success(f"🟢 **Inspeccionados en Ambos Años:** {len(ambos)} locales")
+        c3.info(f"🔵 **Nuevos Detectados en 2026:** {len(nuevos_2026)} locales")
+
+        st.divider()
+
+        modo_vista = st.radio(
+            "Ver lista detallada de:",
+            [
+                "🔴 Locales 2025 pendientes en 2026 (PRIORIDAD)",
+                "🟢 Inspeccionados en ambos años",
+                "🔵 Nuevos en 2026",
+            ],
+            horizontal=True,
+        )
+
+        if "🔴" in modo_vista:
+          st.subheader(f"🔴 Locales de {calle_comp} pendientes de control 2026")
+          df_pend = r25[r25["Direccion_Corta"].isin(faltantes)].copy()
+          st.dataframe(
+              df_pend[[
+                  "Direccion_Corta",
+                  "Razon_Social",
+                  "CUIT",
+                  "Cuadra_Texto",
+                  "Cant_Inspecciones",
+                  "Ultimo_Estado",
+              ]].rename(columns={"Cant_Inspecciones": "Inspecciones en 2025"}),
+              use_container_width=True,
+          )
+
+        elif "🟢" in modo_vista:
+          st.subheader(f"🟢 Locales de {calle_comp} con control en ambos años")
+          df_ambos_25 = (
+              r25[r25["Direccion_Corta"].isin(ambos)][[
+                  "Direccion_Corta",
+                  "Cant_Inspecciones",
+              ]]
+              .rename(columns={"Cant_Inspecciones": "Insp 2025"})
+              .set_index("Direccion_Corta")
+          )
+          df_ambos_26 = (
+              r26[r26["Direccion_Corta"].isin(ambos)][[
+                  "Direccion_Corta",
+                  "Razon_Social",
+                  "CUIT",
+                  "Cant_Inspecciones",
+                  "Ultimo_Estado",
+              ]]
+              .rename(columns={"Cant_Inspecciones": "Insp 2026"})
+              .set_index("Direccion_Corta")
+          )
+
+          df_cruce = df_ambos_26.join(df_ambos_25).reset_index()
+          st.dataframe(df_cruce, use_container_width=True)
+
+        elif "🔵" in modo_vista:
+          st.subheader(f"🔵 Locales nuevos inspeccionados en 2026")
+          df_nuev = r26[r26["Direccion_Corta"].isin(nuevos_2026)].copy()
+          st.dataframe(
+              df_nuev[[
+                  "Direccion_Corta",
+                  "Razon_Social",
+                  "CUIT",
+                  "Cuadra_Texto",
+                  "Cant_Inspecciones",
+                  "Ultimo_Estado",
+              ]],
+              use_container_width=True,
+          )
+    else:
+      st.warning(
+          f"No se encontró el archivo fijo `{DEFAULT_FILE_2025}` en la carpeta"
+          " raíz del proyecto."
+      )
+
+  # --- SECCIÓN 4: CONSULTAR FICHA / CONSOLIDADO ---
   elif opcion == "🔍 Consultar Ficha por Local":
     st.title("🔍 Buscador Interactivo y Consolidado")
 
@@ -422,7 +567,6 @@ if resumen is not None:
           placeholder="Ej: 30-12345678-9 o Nombre de Empresa...",
       )
 
-    # VISTA 1: BÚSQUEDA AGRUPADA Y CONSOLIDADA POR CUIT / RAZÓN SOCIAL
     if busqueda_cuit_rs.strip():
       query_text = busqueda_cuit_rs.strip()
 
@@ -463,7 +607,6 @@ if resumen is not None:
         )
 
         st.divider()
-
         st.subheader("📍 Domicilios y Locales de la Empresa")
         st.dataframe(
             res_match[[
@@ -477,7 +620,7 @@ if resumen is not None:
             use_container_width=True,
         )
 
-        st.subheader("📋 Historial Completo de Inspecciones")
+        st.subheader("📋 Historial Completo de Inspecciones 2026")
         direcciones_grupo = res_match["Direccion_Corta"].tolist()
         historial_grupo = df_raw[
             df_raw["Direccion_Corta"].isin(direcciones_grupo)
@@ -501,7 +644,7 @@ if resumen is not None:
 
         st.dataframe(
             historial_grupo[cols_presentes].rename(
-                columns={"CUIT_Clean": "CUIT"}
+                columns={"CUIT_Clean": "CUIT", "Inspec.": "Inspector"}
             ),
             use_container_width=True,
         )
@@ -511,7 +654,6 @@ if resumen is not None:
             " ingresado."
         )
 
-    # VISTA 2: BÚSQUEDA PUNTUAL POR DIRECCIÓN
     elif busqueda_dir:
       local = resumen[resumen["Direccion_Corta"] == busqueda_dir].iloc[0]
       st.success(
@@ -551,11 +693,120 @@ if resumen is not None:
       cols_presentes = [c for c in cols_historial if c in historial.columns]
 
       st.dataframe(
-          historial[cols_presentes].rename(columns={"CUIT_Clean": "CUIT"}),
+          historial[cols_presentes].rename(
+              columns={"CUIT_Clean": "CUIT", "Inspec.": "Inspector"}
+          ),
           use_container_width=True,
       )
 
-  # --- SECCIÓN 4: TABLERO DE PRIORIDADES ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES ---
+  elif opcion == "📋 Ranking de Inspectores":
+    st.title("📋 Ranking y Desempeño de Inspectores (2026)")
+    st.write(
+        "Resumen consolidado de inspecciones, locales fiscalizados,"
+        " trabajadores relevados e irregularidades detectadas por inspector."
+    )
+
+    ranking_df = (
+        df_raw.groupby("Inspector_Clean")
+        .agg(
+            Total_Inspecciones=("Direccion_Corta", "count"),
+            Locales_Unicos=("Direccion_Corta", "nunique"),
+            Total_TREL=("TREL", "sum"),
+            Irregularidades=("Es_Irregular", "sum"),
+        )
+        .reset_index()
+    )
+
+    ranking_df["% Irregularidad"] = (
+        (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
+    ).round(1)
+    ranking_df = ranking_df.sort_values(
+        by="Total_Inspecciones", ascending=False
+    ).rename(columns={"Inspector_Clean": "Inspector"})
+
+    # Métricas Generales de Inspección
+    i1, i2, i3, i4 = st.columns(4)
+    i1.metric("Inspectores Activos", len(ranking_df))
+    i2.metric(
+        "Prom. Inspecciones p/ Inspector",
+        f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
+    )
+    i3.metric(
+        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max()
+    )
+    i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL"].sum()))
+
+    st.divider()
+
+    col_rank_tabla, col_rank_chart = st.columns([1.2, 1])
+
+    with col_rank_tabla:
+      st.subheader("🏆 Tabla Posiciones por Cantidad de Inspecciones")
+      st.dataframe(
+          ranking_df[[
+              "Inspector",
+              "Total_Inspecciones",
+              "Locales_Unicos",
+              "Total_TREL",
+              "Irregularidades",
+              "% Irregularidad",
+          ]],
+          use_container_width=True,
+      )
+
+    with col_rank_chart:
+      st.subheader("📊 Gráfico de Inspecciones por Inspector")
+      st.bar_chart(
+          data=ranking_df.set_index("Inspector")["Total_Inspecciones"]
+      )
+
+    st.divider()
+
+    # Filtro detallado por Inspector seleccionado
+    st.subheader("🔍 Detalle de Actas por Inspector")
+    inspectores_lista = sorted(ranking_df["Inspector"].unique())
+    inspector_sel = st.selectbox(
+        "Seleccioná un inspector para ver su historial completo:",
+        [""] + inspectores_lista,
+    )
+
+    if inspector_sel:
+      df_inspector = df_raw[df_raw["Inspector_Clean"] == inspector_sel]
+
+      d1, d2, d3, d4 = st.columns(4)
+      d1.metric("Inspecciones Totales", len(df_inspector))
+      d2.metric(
+          "Locales Distintos Visito", df_inspector["Direccion_Corta"].nunique()
+      )
+      d3.metric("Total TREL", int(df_inspector["TREL"].sum()))
+      d4.metric(
+          "Irregularidades", df_inspector["Es_Irregular"].sum()
+      )
+
+      cols_hist_insp = [
+          "FECHA",
+          "RAZON SOCIAL",
+          "CUIT_Clean",
+          "CALLE",
+          "Núm.",
+          "Localidad",
+          "TREL",
+          "TNR",
+          "Expediente",
+      ]
+      cols_presentes_insp = [
+          c for c in cols_hist_insp if c in df_inspector.columns
+      ]
+
+      st.dataframe(
+          df_inspector[cols_presentes_insp].rename(
+              columns={"CUIT_Clean": "CUIT"}
+          ),
+          use_container_width=True,
+      )
+
+  # --- SECCIÓN 6: TABLERO DE PRIORIDADES ---
   elif opcion == "🔴 Tablero de Prioridades":
     st.title("🔴 Tablero de Refiscalización Prioritaria")
 
@@ -580,7 +831,7 @@ if resumen is not None:
         use_container_width=True,
     )
 
-  # --- SECCIÓN 5: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
+  # --- SECCIÓN 7: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
   elif opcion == "🗺️ Mapa de Control":
     st.title("🗺️ Mapa de Calor de Fiscalizaciones")
     st.write(
@@ -654,12 +905,13 @@ if resumen is not None:
           "No se encontró la columna 'Direccion_Corta' en la base de datos."
       )
 
-  # --- SECCIÓN 6: CARGA Y CONFIGURACIÓN ---
+  # --- SECCIÓN 8: CARGA Y CONFIGURACIÓN ---
   elif opcion == "⚙️ Carga y Configuración":
     st.title("⚙️ Carga y Actualización de Archivos")
     st.info(
-        "💡 La aplicación está vinculada a la base oficial `001-BASE"
-        " COMPARTIDA FISCALIZACIONES 2026.xlsx`."
+        "💡 Base 2025 Fija:"
+        f" `{DEFAULT_FILE_2025}`  \n💡 Base 2026 Dinámica:"
+        f" `{DEFAULT_FILE_2026}`"
     )
 else:
   st.warning("Esperando carga de base de datos...")
