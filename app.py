@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 
-# --- MAPEO DE INICIALES (Ajustalo según tus datos) ---
+# --- MAPEO DE INICIALES ---
 MAPEO_INICIALES = {
-    # Agregá acá tus mapeos si los usas
+    # Agregá acá tus iniciales y nombres completos según corresponda
 }
 
 # Configuración inicial de la página
@@ -13,21 +13,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Simulación de carga de datos (reemplazalo por tu lectura real si es necesario)
+# Simulación o carga de datos base
 @st.cache_data
 def cargar_datos():
-    # Acá iría tu pd.read_csv o similar
-    # Dejamos un DataFrame vacío o de estructura base por seguridad
     return pd.DataFrame()
 
 df_raw = cargar_datos()
 
-# Menú lateral o selector de opciones (ejemplo basado en tu estructura)
 opcion = st.sidebar.selectbox(
     "Menú de Navegación",
-    ["📋 Ranking de Inspectores"] # Agregá las demás opciones de tu menú original si las tenés
+    ["📋 Ranking de Inspectores"]
 )
-
 
 # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES ---
 if opcion == "📋 Ranking de Inspectores":
@@ -70,7 +66,6 @@ if opcion == "📋 Ranking de Inspectores":
 
     df_exp = df_raw.copy()
     
-    # Validamos que existan las columnas necesarias para evitar errores previos
     if "Inspector_Clean" in df_exp.columns and "Direccion_Corta" in df_exp.columns:
         df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
             desglosar_inspectores
@@ -94,7 +89,6 @@ if opcion == "📋 Ranking de Inspectores":
             (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
         ).round(1)
         
-        # Limpiamos nulos y ordenamos
         ranking_df = ranking_df.dropna(subset=["Inspector_Individual"])
         ranking_df = ranking_df.sort_values(
             by="Total_Inspecciones", ascending=False
@@ -151,7 +145,6 @@ if opcion == "📋 Ranking de Inspectores":
             
             columna_elegida = mapa_metricas[metrica_grafico]
             
-            # Gráfico blindado con x e y explícitas
             st.bar_chart(
                 data=ranking_df,
                 x="Inspector",
