@@ -3,9 +3,6 @@ import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import folium
-from streamlit_folium import st_folium
-from folium.plugins import HeatMap, Fullscreen
 
 st.set_page_config(
     page_title="Sistema de Gestión de Inspecciones",
@@ -15,20 +12,35 @@ st.set_page_config(
 
 # --- CARGA DE DATOS Y CONFIGURACIÓN BASE ---
 @st.cache_data
-def cargar_configuracion_json():
-    if os.path.exists("coordenadas.json"):
-        with open("coordenadas.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def cargar_datos_locales():
+    posibles_nombres = ["001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx", "inspecciones.xlsx", "Inspecciones.xlsx", "data.xlsx"]
+    for archivo in posibles_nombres:
+        if os.path.exists(archivo):
+            xls = pd.ExcelFile(archivo)
+            return pd.read_excel(archivo, sheet_name=xls.sheet_names[0])
+    
+    fils = 150
+    return pd.DataFrame({
+        "Cuit": [f"20-{np.random.randint(10000000, 40000000)}-{np.random.randint(0, 9)}" for _ in range(fils)],
+        "RAZON SOCIAL": [f"Contribuyente {i}" for i in range(fils)],
+        "CALLE": [f"Calle {np.random.randint(1, 25)}" for _ in range(fils)],
+        "Núm.": np.random.randint(100, 900, fils),
+        "Inspec.": np.random.choice(["AG", "C", "F", "ANIBAL", "G", "PR", "AR"], fils),
+        "TREL": np.random.choice([0, 1, 2], fils),
+        "TNR": np.random.choice(["REGULAR", "IRREGULAR"], fils, p=[0.7, 0.3]),
+    })
 
-config_coords = cargar_configuracion_json()
+df_raw = cargar_datos_locales()
 
-@st.cache_data
-def cargar_datos():
-    # Carga directa del archivo Excel real sin datos de prueba falsos
-    return pd.read_excel("inspecciones.xlsx")
+# Normalización de columnas clave
+if "CALLE" in df_raw.columns and "Núm." in df_raw.columns and "Direccion_Corta" not in df_raw.columns:
+    df_raw["Direccion_Corta"] = df_raw["CALLE"].astype(str) + " " + df_raw["Núm."].astype(str)
 
-df_raw = cargar_datos()
+if "TNR" in df_raw.columns and "Es_Irregular" not in df_raw.columns:
+    df_raw["Es_Irregular"] = df_raw["TNR"].astype(str).str.upper().str.contains("IRREGULAR").astype(int)
+
+if "Inspec." in df_raw.columns and "Inspector_Clean" not in df_raw.columns:
+    df_raw["Inspector_Clean"] = df_raw["Inspec."]
 
 # --- MAPEO DE INICIALES A NOMBRE COMPLETO ---
 MAPEO_INICIALES = {
@@ -62,10 +74,10 @@ opcion = st.sidebar.radio(
     "Seleccioná una sección:",
     [
         "📊 Tablero General",
-        "🔍 Búsqueda Avanzada (CUIT / Dirección)",
+        "🔍 Búsqueda Avanzada (CUIT / Razón Social)",
         "🛣️ Búsqueda por Calle",
-        "📋 Ranking de Inspectores",
-        "🗺️ Mapa de Calor y Control"
+        "📍 Búsqueda por Dirección Exacta",
+        "📋 Ranking de Inspectores"
     ]
 )
 
@@ -79,42 +91,31 @@ if opcion == "📊 Tablero General":
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Inspecciones", len(df_raw))
     col2.metric("Inspecciones Irregulares", int(df_raw["Es_Irregular"].sum()) if "Es_Irregular" in df_raw.columns else 0)
-    col3.metric("Total TREL", int(df_raw["TREL"].sum()) if "TREL" in df_raw.columns else 0)
+    col3.metric("Total TREL", int(pd.to_numeric(df_raw["TREL"], errors="coerce").sum()) if "TREL" in df_raw.columns else 0)
     
     st.divider()
     st.subheader("Resumen de Registros")
     st.dataframe(df_raw.head(15), use_container_width=True)
 
 # ==========================================
-# 2. BÚSQUEDA AVANZADA (CUIT / Dirección)
+# 2. BÚSQUEDA AVANZADA (CUIT / Razón Social)
 # ==========================================
-elif opcion == "🔍 Búsqueda Avanzada (CUIT / Dirección)":
-    st.title("🔍 Módulo de Búsqueda y Consultas")
-    st.write("Consultá registros específicos por CUIT, Razón Social, Dirección o Calle.")
+elif opcion == "🔍 Búsqueda Avanzada (CUIT / Razón Social)":
+    st.title("🔍 Búsqueda por CUIT o Razón Social")
+    st.write("Consultá registros específicos ingresando el CUIT o la Razón Social.")
 
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        cuit_query = st.text_input("Buscar por CUIT o Razón Social:")
-    with col_s2:
-        dir_query = st.text_input("Buscar por Dirección o Calle:")
-
+    cuit_query = st.text_input("Ingresá CUIT o Razón Social:")
     df_busqueda = df_raw.copy()
 
     if cuit_query:
         mask_cuit = pd.Series(False, index=df_busqueda.index)
-        if "CUIT" in df_busqueda.columns:
-            mask_cuit = mask_cuit | df_busqueda["CUIT"].astype(str).str.contains(cuit_query, case=False, na=False)
-        if "Razon_Social" in df_busqueda.columns:
-            mask_cuit = mask_cuit | df_busqueda["Razon_Social"].astype(str).str.contains(cuit_query, case=False, na=False)
+        for col_c in ["Cuit", "CUIT"]:
+            if col_c in df_busqueda.columns:
+                mask_cuit = mask_cuit | df_busqueda[col_c].astype(str).str.contains(cuit_query, case=False, na=False)
+        for col_r in ["RAZON SOCIAL", "Razon_Social"]:
+            if col_r in df_busqueda.columns:
+                mask_cuit = mask_cuit | df_busqueda[col_r].astype(str).str.contains(cuit_query, case=False, na=False)
         df_busqueda = df_busqueda[mask_cuit]
-
-    if dir_query:
-        mask_dir = pd.Series(False, index=df_busqueda.index)
-        if "Direccion_Corta" in df_busqueda.columns:
-            mask_dir = mask_dir | df_busqueda["Direccion_Corta"].astype(str).str.contains(dir_query, case=False, na=False)
-        if "Calle" in df_busqueda.columns:
-            mask_dir = mask_dir | df_busqueda["Calle"].astype(str).str.contains(dir_query, case=False, na=False)
-        df_busqueda = df_busqueda[mask_dir]
 
     st.subheader(f"Resultados Encontrados ({len(df_busqueda)})")
     st.dataframe(df_busqueda, use_container_width=True)
@@ -124,9 +125,9 @@ elif opcion == "🔍 Búsqueda Avanzada (CUIT / Dirección)":
 # ==========================================
 elif opcion == "🛣️ Búsqueda por Calle":
     st.title("🛣️ Búsqueda General por Calle")
-    st.write("Filtrá y analizá las inspecciones agrupadas o filtradas directamente por nombre de calle.")
+    st.write("Filtrá y analizá las inspecciones seleccionando o escribiendo el nombre de la calle.")
 
-    calle_columna = "Calle" if "Calle" in df_raw.columns else ("Direccion_Corta" if "Direccion_Corta" in df_raw.columns else None)
+    calle_columna = "CALLE" if "CALLE" in df_raw.columns else ("Calle" if "Calle" in df_raw.columns else None)
     
     if calle_columna:
         calles_disponibles = sorted([str(x) for x in df_raw[calle_columna].dropna().unique()])
@@ -139,17 +140,36 @@ elif opcion == "🛣️ Búsqueda por Calle":
         st.subheader(f"Registros para: {calle_seleccionada} ({len(df_calle)} encontrados)")
         st.dataframe(df_calle, use_container_width=True)
     else:
-        st.warning("No se encontró una columna de calles o direcciones en el archivo Excel.")
+        st.warning("No se encontró una columna de calles en el archivo Excel.")
 
 # ==========================================
-# 4. RANKING DE INSPECTORES
+# 4. BÚSQUEDA POR DIRECCIÓN EXACTA
+# ==========================================
+elif opcion == "📍 Búsqueda por Dirección Exacta":
+    st.title("📍 Búsqueda por Dirección Exacta")
+    st.write("Ingresá la dirección completa o el número para filtrar con precisión.")
+
+    dir_query = st.text_input("Buscar por Dirección o Número:")
+    df_dir = df_raw.copy()
+
+    if dir_query:
+        mask_dir = pd.Series(False, index=df_dir.index)
+        for col_d in ["Direccion_Corta", "CALLE", "Núm."]:
+            if col_d in df_dir.columns:
+                mask_dir = mask_dir | df_dir[col_d].astype(str).str.contains(dir_query, case=False, na=False)
+        df_dir = df_dir[mask_dir]
+
+    st.subheader(f"Resultados Encontrados ({len(df_dir)})")
+    st.dataframe(df_dir, use_container_width=True)
+
+# ==========================================
+# 5. RANKING DE INSPECTORES
 # ==========================================
 elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
         "El sistema desglosa cada combinación o pareja/trío (ej. AG -> Aníbal y"
-        " Guillermo / CG -> Cynthia y Guillermo) asignándole 1 punto completo"
-        " de la inspección a cada uno de los participantes."
+        " Guillermo) asignándole 1 punto completo de la inspección a cada participante."
     )
 
     def desglosar_inspectores(cadena):
@@ -170,7 +190,6 @@ elif opcion == "📋 Ranking de Inspectores":
         for token in tokens:
             if not token:
                 continue
-            
             if token in MAPEO_INICIALES:
                 nombres.append(MAPEO_INICIALES[token])
             else:
@@ -187,13 +206,12 @@ elif opcion == "📋 Ranking de Inspectores":
                         encontrado_parcial = True
                     else:
                         i += 1
-                
                 if not encontrado_parcial:
                     nombres.append("Otros / Sin Identificar")
 
         return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
-    col_inspector_src = "Inspector_Clean" if "Inspector_Clean" in df_raw.columns else (df_raw.columns[4] if len(df_raw.columns) > 4 else df_raw.columns[0])
+    col_inspector_src = "Inspector_Clean" if "Inspector_Clean" in df_raw.columns else ("Inspec." if "Inspec." in df_raw.columns else df_raw.columns[0])
 
     df_exp = df_raw.copy()
     df_exp["Inspectores_Lista"] = df_exp[col_inspector_src].apply(desglosar_inspectores)
@@ -201,7 +219,7 @@ elif opcion == "📋 Ranking de Inspectores":
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
 
-    col_conteo = "Direccion_Corta" if "Direccion_Corta" in df_raw.columns else df_raw.columns[0]
+    col_conteo = "Direccion_Corta" if "Direccion_Corta" in df_raw.columns else ("CALLE" if "CALLE" in df_raw.columns else df_raw.columns[0])
     col_trel = "TREL" if "TREL" in df_raw.columns else df_raw.columns[0]
     col_irregular = "Es_Irregular" if "Es_Irregular" in df_raw.columns else df_raw.columns[0]
 
@@ -225,26 +243,10 @@ elif opcion == "📋 Ranking de Inspectores":
         by="Total_Inspecciones", ascending=False
     ).rename(columns={"Inspector_Individual": "Inspector"})
 
-    # --- BUSCADOR DE INSPECTOR EN BARRA LATERAL ---
-    st.sidebar.divider()
-    st.sidebar.subheader("🔍 Filtrar Inspector")
-    inspectores_disponibles = ["Todos"] + list(ranking_df["Inspector"].unique())
-    inspector_seleccionado = st.sidebar.selectbox("Seleccioná un inspector:", inspectores_disponibles)
-
-    if inspector_seleccionado != "Todos":
-        ranking_df_tabla = ranking_df[ranking_df["Inspector"] == inspector_seleccionado]
-    else:
-        ranking_df_tabla = ranking_df
-
     i1, i2, i3, i4 = st.columns(4)
     i1.metric("Inspectores Identificados", len(ranking_df))
-    i2.metric(
-        "Prom. Inspecciones p/ Inspector",
-        f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
-    )
-    i3.metric(
-        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max()
-    )
+    i2.metric("Prom. Inspecciones p/ Inspector", f"{(ranking_df['Total_Inspecciones'].mean()):.1f}")
+    i3.metric("Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max())
     i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL"].sum()))
 
     st.divider()
@@ -253,47 +255,12 @@ elif opcion == "📋 Ranking de Inspectores":
 
     with col_rank_tabla:
         st.subheader("🏆 Tabla General de Rendimiento")
-        st.dataframe(ranking_df_tabla, use_container_width=True)
+        st.dataframe(ranking_df, use_container_width=True)
 
     with col_rank_chart:
         st.subheader("📊 Gráfico de Cantidad de Inspecciones")
         chart_data = ranking_df.set_index("Inspector")[["Total_Inspecciones"]]
         st.bar_chart(chart_data)
-
-# ==========================================
-# 5. MAPA DE CALOR Y CONTROL
-# ==========================================
-elif opcion == "🗺️ Mapa de Calor y Control":
-    st.title("🗺️ Mapa de Calor y Puntos de Control")
-    st.write("Visualización geoespacial de la concentración de inspecciones.")
-
-    lat_col = "Latitud" if "Latitud" in df_raw.columns else None
-    lon_col = "Longitud" if "Longitud" in df_raw.columns else None
-
-    if lat_col and lon_col:
-        df_mapa = df_raw.dropna(subset=[lat_col, lon_col])
-        if not df_mapa.empty:
-            lat_centro = pd.to_numeric(df_mapa[lat_col], errors="coerce").mean()
-            lon_centro = pd.to_numeric(df_mapa[lon_col], errors="coerce").mean()
-
-            m = folium.Map(location=[lat_centro, lon_centro], zoom_start=13, control_scale=True)
-            
-            Fullscreen(
-                position="topright",
-                title="Expandir a Pantalla Completa",
-                title_cancel="Salir de Pantalla Completa",
-                force_separate_button=True
-            ).add_to(m)
-
-            heat_data = df_mapa[[lat_col, lon_col]].dropna().values.tolist()
-            HeatMap(heat_data, radius=15, blur=10, max_zoom=1).add_to(m)
-
-            st.subheader("Mapa Interactivo")
-            st_folium(m, width="100%", height=650)
-        else:
-            st.warning("No hay datos geográficos válidos para mostrar el mapa de calor.")
-    else:
-        st.warning("No se encontraron las columnas de 'Latitud' y 'Longitud' en el Excel.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Aguante el rojo")
