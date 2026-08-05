@@ -1,18 +1,39 @@
+import json
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-import os
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, Fullscreen
 
 # Configuración inicial de la página
 st.set_page_config(
-    page_title="Sistema de Gestión de Inspecciones",
+    page_title="Sistema de Gestión de Inspecciones - Control de Refiscalización",
     page_icon="📋",
     layout="wide"
 )
+
+# --- SISTEMA DE AUTENTICACIÓN ---
+def verificar_autenticacion():
+    if "autenticado" not in st.session_state:
+        st.session_state.autenticado = False
+
+    if not st.session_state.autenticado:
+        st.sidebar.title("🔐 Acceso al Sistema")
+        usuario = st.sidebar.text_input("Usuario")
+        password = st.sidebar.text_input("Contraseña", type="password")
+        if st.sidebar.button("Ingresar"):
+            if usuario == "admin" and password == "admin":  # Ajustar según tus credenciales reales
+                st.session_state.autenticado = True
+                st.rerun()
+            else:
+                st.sidebar.error("Usuario o contraseña incorrectos")
+        return False
+    return True
+
+if not verificar_autenticacion():
+    st.stop()
 
 # --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
 MAPEO_INICIALES = {
@@ -40,29 +61,29 @@ MAPEO_INICIALES = {
     "RUBEN": "Rubén",
 }
 
-# --- CARGA DE DATOS Y CONFIGURACIÓN BASE ---
+# --- CARGA DE DATOS Y CACHÉ JSON ---
 @st.cache_data
-def cargar_datos_base():
+def cargar_configuracion_json():
     if os.path.exists("coordenadas.json"):
         with open("coordenadas.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
-    else:
-        config = {}
-    return config
+            return json.load(f)
+    return {}
 
-config_data = cargar_datos_base()
+config_coords = cargar_configuracion_json()
 
 @st.cache_data
-def obtener_df():
-    # Estructura real de tu app con lectura de planillas de inspecciones
+def cargar_datos():
     try:
         df = pd.read_excel("inspecciones.xlsx")
     except:
         np.random.seed(42)
-        fils = 100
+        fils = 150
         df = pd.DataFrame({
-            "Direccion_Corta": [f"Calle {i}" for i in range(fils)],
-            "Inspector_Clean": np.random.choice(["AG", "C", "F", "ANIBAL", "G", "PR"], fils),
+            "CUIT": [f"20-{np.random.randint(10000000, 40000000)}-{np.random.randint(0, 9)}" for _ in range(fils)],
+            "Razon_Social": [f"Contribuyente {i}" for i in range(fils)],
+            "Direccion_Corta": [f"Calle Falsa {np.random.randint(100, 900)}" for _ in range(fils)],
+            "Calle": [f"Calle {np.random.randint(1, 25)}" for _ in range(fils)],
+            "Inspector_Clean": np.random.choice(["AG", "C", "F", "ANIBAL", "G", "PR", "AR"], fils),
             "TREL": np.random.choice([0, 1, 2], fils),
             "Es_Irregular": np.random.choice([0, 1], fils, p=[0.7, 0.3]),
             "Latitud": -38.005 + np.random.normal(0, 0.02, fils),
@@ -70,7 +91,7 @@ def obtener_df():
         })
     return df
 
-df_raw = obtener_df()
+df_raw = cargar_datos()
 
 # --- BARRA LATERAL DE NAVEGACIÓN ---
 st.sidebar.title("Navegación")
@@ -79,16 +100,17 @@ opcion = st.sidebar.radio(
     [
         "📊 Tablero General",
         "📋 Ranking de Inspectores",
-        "🗺️ Mapa de Calor y Control"
+        "🗺️ Mapa de Calor y Control",
+        "🔍 Búsqueda Avanzada (CUIT / Dirección)"
     ]
 )
 
 # ==========================================
-# 1. TABLERO GENERAL (Modificado de Dashboard General)
+# 1. TABLERO GENERAL
 # ==========================================
 if opcion == "📊 Tablero General":
     st.title("📊 Tablero General de Inspecciones")
-    st.write("Vista general de las métricas principales del sistema.")
+    st.write("Vista general de las métricas principales del sistema de refiscalización.")
     
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Inspecciones", len(df_raw))
@@ -97,10 +119,10 @@ if opcion == "📊 Tablero General":
     
     st.divider()
     st.subheader("Resumen de Registros")
-    st.dataframe(df_raw.head(10), use_container_width=True)
+    st.dataframe(df_raw.head(15), use_container_width=True)
 
 # ==========================================
-# 2. RANKING DE INSPECTORES (Con buscador y parsing robusto)
+# 2. RANKING DE INSPECTORES
 # ==========================================
 elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
@@ -152,9 +174,7 @@ elif opcion == "📋 Ranking de Inspectores":
         return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
     df_exp = df_raw.copy()
-    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
-        desglosar_inspectores
-    )
+    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(desglosar_inspectores)
     df_explotado = df_exp.explode("Inspectores_Lista").rename(
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
@@ -177,7 +197,7 @@ elif opcion == "📋 Ranking de Inspectores":
         by="Total_Inspecciones", ascending=False
     ).rename(columns={"Inspector_Individual": "Inspector"})
 
-    # --- BUSCADOR / FILTRO ACTIVO EN BARRA LATERAL ---
+    # --- BUSCADOR DE INSPECTOR EN BARRA LATERAL ---
     st.sidebar.divider()
     st.sidebar.subheader("🔍 Filtrar Inspector")
     inspectores_disponibles = ["Todos"] + list(ranking_df["Inspector"].unique())
@@ -213,11 +233,11 @@ elif opcion == "📋 Ranking de Inspectores":
         st.bar_chart(chart_data)
 
 # ==========================================
-# 3. MAPA DE CALOR Y CONTROL (Ancho completo)
+# 3. MAPA DE CALOR Y CONTROL (Con Fullscreen)
 # ==========================================
 elif opcion == "🗺️ Mapa de Calor y Control":
     st.title("🗺️ Mapa de Calor y Puntos de Control")
-    st.write("Visualización geoespacial de la concentración de inspecciones.")
+    st.write("Visualización geoespacial de la concentración de inspecciones con botón de pantalla completa.")
 
     df_mapa = df_raw.dropna(subset=["Latitud", "Longitud"])
 
@@ -226,14 +246,52 @@ elif opcion == "🗺️ Mapa de Calor y Control":
         lon_centro = df_mapa["Longitud"].mean()
 
         m = folium.Map(location=[lat_centro, lon_centro], zoom_start=13, control_scale=True)
+        
+        Fullscreen(
+            position="topright",
+            title="Expandir a Pantalla Completa",
+            title_cancel="Salir de Pantalla Completa",
+            force_separate_button=True
+        ).add_to(m)
+
         heat_data = df_mapa[["Latitud", "Longitud"]].values.tolist()
         HeatMap(heat_data, radius=15, blur=10, max_zoom=1).add_to(m)
 
-        st.subheader("Visualización Interactiva")
-        st_folium(m, width="100%", height=600)
+        st.subheader("Mapa Interactivo")
+        st_folium(m, width="100%", height=650)
     else:
         st.warning("No hay datos geográficos suficientes para mostrar el mapa de calor.")
 
-# Despedida y cierre
+# ==========================================
+# 4. BÚSQUEDA AVANZADA (CUIT / Dirección / Calle)
+# ==========================================
+elif opcion == "🔍 Búsqueda Avanzada (CUIT / Dirección)":
+    st.title("🔍 Módulo de Búsqueda y Consultas")
+    st.write("Consultá registros específicos por CUIT, Razón Social, Dirección o Calle.")
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        cuit_query = st.text_input("Buscar por CUIT o Razón Social:")
+    with col_s2:
+        dir_query = st.text_input("Buscar por Dirección o Calle:")
+
+    df_busqueda = df_raw.copy()
+
+    if cuit_query:
+        mask_cuit = df_busqueda["CUIT"].astype(str).str.contains(cuit_query, case=False, na=False)
+        if "Razon_Social" in df_busqueda.columns:
+            mask_cuit = mask_cuit | df_busqueda["Razon_Social"].astype(str).str.contains(cuit_query, case=False, na=False)
+        df_busqueda = df_busqueda[mask_cuit]
+
+    if dir_query:
+        mask_dir = df_busqueda["Direccion_Corta"].astype(str).str.contains(dir_query, case=False, na=False)
+        if "Calle" in df_busqueda.columns:
+            mask_dir = mask_dir | df_busqueda["Calle"].astype(str).str.contains(dir_query, case=False, na=False)
+        df_busqueda = df_busqueda[mask_dir]
+
+    st.subheader(f"Resultados Encontrados ({len(df_busqueda)})")
+    st.dataframe(df_busqueda, use_container_width=True)
+
+# Cierre de la barra lateral
 st.sidebar.markdown("---")
 st.sidebar.caption("Aguante el rojo")
