@@ -27,25 +27,22 @@ def check_password():
         username = st.session_state.get("username", "")
         password = st.session_state.get("password", "")
 
-        # Verifica contra los credenciales guardados en Secrets (o valores por defecto de prueba)
         allowed_users = st.secrets.get("passwords", {"admin": "1234"})
 
         if username in allowed_users and allowed_users[username] == password:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # No guardamos la clave en memoria
+            del st.session_state["password"]
             del st.session_state["username"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Primera vez que entra, muestra el formulario de Login
         st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
         st.text_input("Usuario", key="username")
         st.text_input("Contraseña", type="password", key="password")
         st.button("Iniciar Sesión", on_click=password_entered)
         return False
     elif not st.session_state["password_correct"]:
-        # Si falló el login
         st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
         st.text_input("Usuario", key="username")
         st.text_input("Contraseña", type="password", key="password")
@@ -53,23 +50,18 @@ def check_password():
         st.error("😕 Usuario o contraseña incorrectos.")
         return False
     else:
-        # Credenciales correctas
         return True
 
-# Si el usuario NO está autenticado, detiene la ejecución del resto del código
 if not check_password():
     st.stop()
 
-# Botón para cerrar sesión en la barra lateral
 if st.sidebar.button("🚪 Cerrar Sesión"):
     st.session_state["password_correct"] = False
     st.rerun()
 
 # ==============================================================================
-# --- A PARTIR DE ACÁ SIGUE TODO TU CÓDIGO NORMAL ---
-# ==============================================================================
-
 # --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
+# ==============================================================================
 MAPEO_INICIALES = {
     "A": "Aníbal",
     "ANIBAL": "Aníbal",
@@ -114,7 +106,6 @@ st.markdown(
         font-weight: bold;
     }
 
-    /* AGRANDAR LETRA EN BARRA LATERAL */
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
         font-size: 20px !important;
         font-weight: 600 !important;
@@ -166,7 +157,6 @@ uploaded_file_2026 = st.sidebar.file_uploader(
     key="uploader_2026",
 )
 
-
 # --- MANEJO DE CACHÉ DE COORDENADAS ---
 def cargar_cache_coords():
   if os.path.exists(CACHE_FILE):
@@ -177,14 +167,12 @@ def cargar_cache_coords():
       return {}
   return {}
 
-
 def guardar_cache_coords(cache):
   try:
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
       json.dump(cache, f, ensure_ascii=False, indent=2)
   except Exception as e:
     st.error(f"Error al guardar caché de coordenadas: {e}")
-
 
 def geocodificar_direcciones_seguro(df_direcciones):
   cache = cargar_cache_coords()
@@ -239,7 +227,6 @@ def geocodificar_direcciones_seguro(df_direcciones):
     progress_bar.empty()
 
   return cache
-
 
 # --- FUNCIÓN DE CARGA Y NORMALIZACIÓN DE BASES ---
 def cargar_datos(file_source):
@@ -314,7 +301,6 @@ def cargar_datos(file_source):
   else:
     df["Fecha_Clean"] = pd.NaT
 
-  # Columna de Inspector
   col_inspector = (
       "Inspec."
       if "Inspec." in df.columns
@@ -368,7 +354,6 @@ def cargar_datos(file_source):
   resumen["Prioridad"] = resumen.apply(asignar_prioridad, axis=1)
   return df, resumen
 
-
 # --- CARGA BASE 2026 ---
 df_raw, resumen = None, None
 file_2026 = (
@@ -383,7 +368,6 @@ if file_2026:
   except Exception as e:
     st.error(f"Error cargando Base 2026: {e}")
 
-
 # --- CARGA BASE 2025 (FIJA EN CACHÉ) ---
 @st.cache_data(show_spinner=False)
 def cargar_base_2025_fija(path):
@@ -393,7 +377,6 @@ def cargar_base_2025_fija(path):
     except Exception:
       return None, None
   return None, None
-
 
 df_raw_2025, resumen_2025 = cargar_base_2025_fija(DEFAULT_FILE_2025)
 
@@ -829,7 +812,7 @@ if resumen is not None:
           use_container_width=True,
       )
 
-  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (MÉTODO REAL VS MÉTODO RAMADORI) ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
@@ -868,16 +851,13 @@ if resumen is not None:
 
       return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
-    # Preparamos las columnas auxiliares en un DataFrame de trabajo para el desglose
     df_exp = df_raw.copy()
     
-    # 1. Calculamos cantidad de inspectores por fila para el Método Ramadori
     df_exp['Cant_Inspectores_Fila'] = df_exp['Inspector_Clean'].astype(str).apply(lambda x: len(desglosar_inspectores(x)))
     df_exp['Inspecciones_Ramadori'] = 1 / df_exp['Cant_Inspectores_Fila']
     df_exp['Trabajadores_Ramadori'] = df_exp['TREL'] / df_exp['Cant_Inspectores_Fila']
-    df_exp['Inspecciones_Real'] = 1  # Cada fila cuenta como 1 entero
+    df_exp['Inspecciones_Real'] = 1
 
-    # 2. Explotamos los inspectores para armar las tablas individuales
     df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(desglosar_inspectores)
     df_explotado = df_exp.explode("Inspectores_Lista").rename(
         columns={"Inspectores_Lista": "Inspector_Individual"}
@@ -913,13 +893,37 @@ if resumen is not None:
 
     st.divider()
 
-    # --- MOSTRAMOS AMBOS MÉTODOS CON LOS TÍTULOS REQUERIDOS ---
-    st.markdown("---")
+    # --- BUSCADOR Y FILTRO POR INSPECTOR ---
+    st.subheader("🔍 Búsqueda Específica por Inspector")
+    lista_inspectores_unicos = sorted(tabla_metodo_real["Inspector"].unique().tolist())
+    inspector_buscado = st.selectbox(
+        "Seleccioná un inspector para ver sus totales bajo ambos métodos:",
+        ["(Ver listado completo)"] + lista_inspectores_unicos
+    )
+
+    if inspector_buscado != "(Ver listado completo)":
+      df_real_filt = tabla_metodo_real[tabla_metodo_real["Inspector"] == inspector_buscado]
+      df_rama_filt = tabla_metodo_ramadori[tabla_metodo_ramadori["Inspector"] == inspector_buscado]
+      
+      st.success(f"📌 Resultados para: **{inspector_buscado}**")
+      
+      col_fi1, col_fi2 = st.columns(2)
+      with col_fi1:
+          st.markdown("##### 🏢 Método Real (Totales)")
+          st.dataframe(df_real_filt, use_container_width=True)
+      with col_fi2:
+          st.markdown("##### 🧠 Método Ramadori (Totales)")
+          st.dataframe(df_rama_filt, use_container_width=True)
+      
+      st.divider()
+
+    # --- RANKINGS COMPLETOS ---
+    st.subheader("📊 Rankings Completos")
     col_real, col_ramadori = st.columns(2)
 
     with col_real:
-        st.header("🏢 Método Real")
-        st.caption("La cruda realidad: inspección entera y total de trabajadores por cada inspector presente.")
+        st.markdown("### 🏢 Método Real")
+        st.caption("Inspección entera y total de trabajadores por cada inspector.")
         st.dataframe(
             tabla_metodo_real[[
                 "Inspector",
@@ -933,8 +937,8 @@ if resumen is not None:
         )
 
     with col_ramadori:
-        st.header("🧠 Método Ramadori")
-        st.caption("Justicia pura: carga de trabajo y trabajadores fraccionados equitativamente.")
+        st.markdown("### 🧠 Método Ramadori")
+        st.caption("Carga de trabajo y trabajadores fraccionados.")
         st.dataframe(
             tabla_metodo_ramadori[[
                 "Inspector",
@@ -948,8 +952,6 @@ if resumen is not None:
         )
 
     st.divider()
-
-    # Gráfico comparativo basado en el Método Real por defecto (o se puede elegir)
     st.subheader("📊 Gráfico de Inspecciones (Método Real)")
     st.bar_chart(data=tabla_metodo_real.set_index("Inspector")["Total_Inspecciones"])
 
@@ -986,7 +988,6 @@ if resumen is not None:
     with st.spinner("Geocodificando direcciones faltantes (esto puede demorar un momento la primera vez)..."):
         cache_coords = geocodificar_direcciones_seguro(resumen)
 
-    # Centro por defecto en Mar del Plata
     mapa = folium.Map(location=[-38.0055, -57.5426], zoom_start=13)
 
     heat_data = []
