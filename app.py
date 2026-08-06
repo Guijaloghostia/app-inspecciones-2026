@@ -853,9 +853,11 @@ if resumen is not None:
 
     df_exp = df_raw.copy()
     
+    # Cálculo de proporciones (Incluyendo la irregularidad corregida para Ramadori)
     df_exp['Cant_Inspectores_Fila'] = df_exp['Inspector_Clean'].astype(str).apply(lambda x: len(desglosar_inspectores(x)))
     df_exp['Inspecciones_Ramadori'] = 1 / df_exp['Cant_Inspectores_Fila']
     df_exp['Trabajadores_Ramadori'] = df_exp['TREL'] / df_exp['Cant_Inspectores_Fila']
+    df_exp['Es_Irregular_Ramadori'] = df_exp['Es_Irregular'] / df_exp['Cant_Inspectores_Fila']
     df_exp['Inspecciones_Real'] = 1
 
     df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(desglosar_inspectores)
@@ -877,14 +879,14 @@ if resumen is not None:
     tabla_metodo_real["% Irregularidad"] = ((tabla_metodo_real["Irregularidades"] / tabla_metodo_real["Total_Inspecciones"]) * 100).round(1)
     tabla_metodo_real = tabla_metodo_real.sort_values(by="Total_Inspecciones", ascending=False).rename(columns={"Inspector_Individual": "Inspector"})
 
-    # --- TABLA MÉTODO RAMADORI ---
+    # --- TABLA MÉTODO RAMADORI (CORREGIDA) ---
     tabla_metodo_ramadori = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
             Total_Inspecciones=("Inspecciones_Ramadori", "sum"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
             Total_TREL=("Trabajadores_Ramadori", "sum"),
-            Irregularidades=("Es_Irregular", "sum"),
+            Irregularidades=("Es_Irregular_Ramadori", "sum"), # Irregularidad fraccionada proporcionalmente
         )
         .reset_index()
     )
