@@ -72,6 +72,7 @@ if st.sidebar.button("🚪 Cerrar Sesión"):
 # --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
 MAPEO_INICIALES = {
     "A": "Aníbal",
+    "ANIBAL": "Aníbal",
     "AR": "Ariel",
     "ARIEL": "Ariel",
     "C": "Cynthia",
@@ -82,10 +83,13 @@ MAPEO_INICIALES = {
     "G": "Guillermo",
     "GUILLERMO": "Guillermo",
     "GO": "Gonzalo",
+    "GONZALO": "Gonzalo",
     "H": "Hernán",
+    "HERNAN": "Hernán",
     "L": "Luciano",
     "LUCIANO": "Luciano",
     "P": "Pablo",
+    "PABLO": "Pablo",
     "R": "Rubén",
     "RUBEN": "Rubén",
 }
