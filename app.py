@@ -829,20 +829,17 @@ if resumen is not None:
           use_container_width=True,
       )
 
-  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS Y TRÍOS) ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (MÉTODO REAL VS MÉTODO RAMADORI) ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
-        "El sistema desglosa cada combinación o pareja/trío (ej. AG -> Aníbal y"
-        " Guillermo / CG -> Cynthia y Guillermo) asignándole 1 punto completo"
-        " de la inspección a cada uno de los participantes."
+        "Comparativa de rendimiento aplicando el tradicional **Método Real** y el nuevo **Método Ramadori** con carga proporcional."
     )
 
     def desglosar_inspectores(cadena):
       if not isinstance(cadena, str) or not cadena.strip():
         return ["Otros / Sin Identificar"]
 
-      # Separa por guiones, barras o espacios
       partes = str(cadena).replace("/", "-").replace(" ", "-").split("-")
       nombres = []
 
@@ -851,274 +848,196 @@ if resumen is not None:
         if not p_limpia:
           continue
 
-        # 1. Si el código exacto está en el mapa (ej. CIMINO, ARIEL, CINTIA, LUCIANO)
         if p_limpia in MAPEO_INICIALES:
           nombres.append(MAPEO_INICIALES[p_limpia])
         else:
-          # 2. Desglose carácter por carácter para iniciales (ej. AG, CG, ARG, L)
           i = 0
           while i < len(p_limpia):
-            # Probar si las próximas 2 letras son un código conocido (ej. GO, AR)
             if (
                 i + 2 <= len(p_limpia)
                 and p_limpia[i : i + 2] in MAPEO_INICIALES
             ):
               nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
               i += 2
-            # Probar si la letra individual es conocida (ej. A, G, L, C, F, P, H, R)
             elif p_limpia[i] in MAPEO_INICIALES:
               nombres.append(MAPEO_INICIALES[p_limpia[i]])
               i += 1
             else:
-              # ANTES: cualquier código no identificado (N, B, I, O, Z, U, E, etc.)
-              # se mandaba a "Otros / Sin Identificar", mezclando entre sí a
-              # inspectores activos distintos que no estaban en el diccionario.
-              # AHORA: se conserva el código puntual, separado, para poder
-              # identificarlo y sumarlo a MAPEO_INICIALES con su nombre real.
               nombres.append(f"⚠️ Sin mapear ({p_limpia[i]})")
               i += 1
 
       return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
-    # Duplicar filas para que cada integrante sume la inspección completa a su historial individual
+    # Preparamos las columnas auxiliares en un DataFrame de trabajo para el desglose
     df_exp = df_raw.copy()
-    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
-        desglosar_inspectores
-    )
+    
+    # 1. Calculamos cantidad de inspectores por fila para el Método Ramadori
+    df_exp['Cant_Inspectores_Fila'] = df_exp['Inspector_Clean'].astype(str).apply(lambda x: len(desglosar_inspectores(x)))
+    df_exp['Inspecciones_Ramadori'] = 1 / df_exp['Cant_Inspectores_Fila']
+    df_exp['Trabajadores_Ramadori'] = df_exp['TREL'] / df_exp['Cant_Inspectores_Fila']
+    df_exp['Inspecciones_Real'] = 1  # Cada fila cuenta como 1 entero
+
+    # 2. Explotamos los inspectores para armar las tablas individuales
+    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(desglosar_inspectores)
     df_explotado = df_exp.explode("Inspectores_Lista").rename(
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
 
-    # Agrupación por inspector individual
-    ranking_df = (
+    # --- TABLA MÉTODO REAL ---
+    tabla_metodo_real = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
-            Total_Inspecciones=("Direccion_Corta", "count"),
+            Total_Inspecciones=("Inspecciones_Real", "sum"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
             Total_TREL=("TREL", "sum"),
             Irregularidades=("Es_Irregular", "sum"),
         )
         .reset_index()
     )
+    tabla_metodo_real["% Irregularidad"] = ((tabla_metodo_real["Irregularidades"] / tabla_metodo_real["Total_Inspecciones"]) * 100).round(1)
+    tabla_metodo_real = tabla_metodo_real.sort_values(by="Total_Inspecciones", ascending=False).rename(columns={"Inspector_Individual": "Inspector"})
 
-    ranking_df["% Irregularidad"] = (
-        (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
-    ).round(1)
-    ranking_df = ranking_df.sort_values(
-        by="Total_Inspecciones", ascending=False
-    ).rename(columns={"Inspector_Individual": "Inspector"})
-
-    # Aviso si quedaron códigos de inspector sin identificar en el diccionario
-    sin_mapear = ranking_df[
-        ranking_df["Inspector"].astype(str).str.startswith("⚠️ Sin mapear")
-    ]
-    if not sin_mapear.empty:
-      codigos = ", ".join(sin_mapear["Inspector"].tolist())
-      st.warning(
-          "⚠️ Hay códigos de inspector sin identificar en el diccionario"
-          f" `MAPEO_INICIALES`: {codigos}. Agregalos con el nombre real para"
-          " que dejen de aparecer sueltos en el ranking."
-      )
-
-    # Métricas Generales
-    i1, i2, i3, i4 = st.columns(4)
-    i1.metric("Inspectores Identificados", len(ranking_df))
-    i2.metric(
-        "Prom. Inspecciones p/ Inspector",
-        f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
+    # --- TABLA MÉTODO RAMADORI ---
+    tabla_metodo_ramadori = (
+        df_explotado.groupby("Inspector_Individual")
+        .agg(
+            Total_Inspecciones=("Inspecciones_Ramadori", "sum"),
+            Locales_Unicos=("Direccion_Corta", "nunique"),
+            Total_TREL=("Trabajadores_Ramadori", "sum"),
+            Irregularidades=("Es_Irregular", "sum"),
+        )
+        .reset_index()
     )
-    i3.metric(
-        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max()
-    )
-    i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL"].sum()))
+    tabla_metodo_ramadori["% Irregularidad"] = ((tabla_metodo_ramadori["Irregularidades"] / tabla_metodo_ramadori["Total_Inspecciones"]) * 100).round(1)
+    tabla_metodo_ramadori = tabla_metodo_ramadori.sort_values(by="Total_Inspecciones", ascending=False).rename(columns={"Inspector_Individual": "Inspector"})
 
     st.divider()
 
-    col_rank_tabla, col_rank_chart = st.columns([1.2, 1])
+    # --- MOSTRAMOS AMBOS MÉTODOS CON LOS TÍTULOS REQUERIDOS ---
+    st.markdown("---")
+    col_real, col_ramadori = st.columns(2)
 
-    with col_rank_tabla:
-      st.subheader("🏆 Posiciones Individuales")
-      st.dataframe(
-          ranking_df[[
-              "Inspector",
-              "Total_Inspecciones",
-              "Locales_Unicos",
-              "Total_TREL",
-              "Irregularidades",
-              "% Irregularidad",
-          ]],
-          use_container_width=True,
-      )
+    with col_real:
+        st.header("🏢 Método Real")
+        st.caption("La cruda realidad: inspección entera y total de trabajadores por cada inspector presente.")
+        st.dataframe(
+            tabla_metodo_real[[
+                "Inspector",
+                "Total_Inspecciones",
+                "Locales_Unicos",
+                "Total_TREL",
+                "Irregularidades",
+                "% Irregularidad",
+            ]],
+            use_container_width=True,
+        )
 
-    with col_rank_chart:
-      st.subheader("📊 Gráfico de Inspecciones por Inspector")
-      st.bar_chart(
-          data=ranking_df.set_index("Inspector")["Total_Inspecciones"]
-      )
+    with col_ramadori:
+        st.header("🧠 Método Ramadori")
+        st.caption("Justicia pura: carga de trabajo y trabajadores fraccionados equitativamente.")
+        st.dataframe(
+            tabla_metodo_ramadori[[
+                "Inspector",
+                "Total_Inspecciones",
+                "Locales_Unicos",
+                "Total_TREL",
+                "Irregularidades",
+                "% Irregularidad",
+            ]],
+            use_container_width=True,
+        )
 
     st.divider()
 
-    # Ficha individual
-    st.subheader("🔍 Ficha y Detalle de Actas por Inspector")
-    inspectores_lista = sorted(ranking_df["Inspector"].unique())
-    inspector_sel = st.selectbox(
-        "Seleccioná un inspector para ver sus intervenciones:",
-        [""] + inspectores_lista,
-    )
-
-    if inspector_sel:
-      df_inspector = df_explotado[
-          df_explotado["Inspector_Individual"] == inspector_sel
-      ]
-
-      d1, d2, d3, d4 = st.columns(4)
-      d1.metric("Inspecciones Intervenidas", len(df_inspector))
-      d2.metric(
-          "Locales Distintos Visitó",
-          df_inspector["Direccion_Corta"].nunique(),
-      )
-      d3.metric("Total TREL Relevado", int(df_inspector["TREL"].sum()))
-      d4.metric("Irregularidades", df_inspector["Es_Irregular"].sum())
-
-      cols_hist_insp = [
-          "FECHA",
-          "RAZON SOCIAL",
-          "CUIT_Clean",
-          "CALLE",
-          "Núm.",
-          "Localidad",
-          "TREL",
-          "TNR",
-          "Inspector_Clean",
-          "Expediente",
-      ]
-      cols_presentes_insp = [
-          c for c in cols_hist_insp if c in df_inspector.columns
-      ]
-
-      st.dataframe(
-          df_inspector[cols_presentes_insp].rename(
-              columns={
-                  "CUIT_Clean": "CUIT",
-                  "Inspector_Clean": "Equipo Inspectivo Registrado",
-              }
-          ),
-          use_container_width=True,
-      )
+    # Gráfico comparativo basado en el Método Real por defecto (o se puede elegir)
+    st.subheader("📊 Gráfico de Inspecciones (Método Real)")
+    st.bar_chart(data=tabla_metodo_real.set_index("Inspector")["Total_Inspecciones"])
 
   # --- SECCIÓN 6: TABLERO DE PRIORIDADES ---
   elif opcion == "🔴 Tablero de Prioridades":
     st.title("🔴 Tablero de Refiscalización Prioritaria")
-
-    prio_filtro = st.multiselect(
-        "Filtrar por Nivel de Prioridad:",
-        options=list(resumen["Prioridad"].unique()),
-        default=list(resumen["Prioridad"].unique()),
+    st.write(
+        "Listado de locales que requieren una nueva visita (Generalmente 1 sola "
+        "inspección con resultado irregular)."
     )
 
-    res_filtrado = resumen[resumen["Prioridad"].isin(prio_filtro)]
+    prioridades_altas = resumen[resumen["Prioridad"].str.contains("ALTA")]
+    
+    st.metric("Total Locales Prioridad Alta", len(prioridades_altas))
+
     st.dataframe(
-        res_filtrado[[
+        prioridades_altas[[
             "Direccion_Corta",
             "Razon_Social",
             "CUIT",
-            "Localidad",
             "Cant_Inspecciones",
             "Total_TREL",
             "Ultimo_Estado",
             "Prioridad",
-        ]].sort_values(by=["Cant_Inspecciones"], ascending=[True]),
+        ]].sort_values(by="Cant_Inspecciones", ascending=True),
         use_container_width=True,
     )
 
-  # --- SECCIÓN 7: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
+  # --- SECCIÓN 7: MAPA DE CONTROL ---
   elif opcion == "🗺️ Mapa de Control":
-    st.title("🗺️ Mapa de Calor de Fiscalizaciones")
-    st.write(
-        "Geolocalización automática multilocalidad con persistencia de datos."
-    )
+    st.title("🗺️ Mapa de Georreferenciación y Calor")
+    st.write("Visualización espacial de las fiscalizaciones.")
 
-    if "Direccion_Corta" in resumen.columns:
-      df_geo = resumen[["Direccion_Corta", "Localidad"]].drop_duplicates(
-          subset=["Direccion_Corta"]
-      )
+    with st.spinner("Geocodificando direcciones faltantes (esto puede demorar un momento la primera vez)..."):
+        cache_coords = geocodificar_direcciones_seguro(resumen)
 
-      col_btn1, col_btn2 = st.columns([1, 2])
-      with col_btn1:
-        obtener_coords = st.button("🌐 Generar / Actualizar Coordenadas")
+    # Centro por defecto en Mar del Plata
+    mapa = folium.Map(location=[-38.0055, -57.5426], zoom_start=13)
 
-      dicc_coords = cargar_cache_coords()
+    heat_data = []
+    for _, row in resumen.iterrows():
+        direccion = row["Direccion_Corta"]
+        coords = cache_coords.get(direccion)
+        if coords and coords[0] is not None:
+            color = "green"
+            if "ALTA" in row["Prioridad"]:
+                color = "red"
+            elif "MEDIA" in row["Prioridad"]:
+                color = "orange"
 
-      if obtener_coords:
-        with st.spinner("Procesando y almacenando coordenadas faltantes..."):
-          dicc_coords = geocodificar_direcciones_seguro(df_geo)
-          st.success("¡Coordenadas actualizadas e indexadas en el sistema!")
+            folium.CircleMarker(
+                location=coords,
+                radius=6,
+                popup=f"<b>{direccion}</b><br>{row['Razon_Social']}<br>Inspecciones: {row['Cant_Inspecciones']}<br>Estado: {row['Ultimo_Estado']}",
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7,
+            ).add_to(mapa)
+            heat_data.append(coords)
 
-      if dicc_coords:
-        resumen["Latitud"] = resumen["Direccion_Corta"].map(
-            lambda x: dicc_coords.get(x, (None, None))[0]
-            if isinstance(dicc_coords.get(x), (list, tuple))
-            else None
-        )
-        resumen["Longitud"] = resumen["Direccion_Corta"].map(
-            lambda x: dicc_coords.get(x, (None, None))[1]
-            if isinstance(dicc_coords.get(x), (list, tuple))
-            else None
-        )
+    if heat_data:
+        HeatMap(heat_data).add_to(mapa)
 
-        df_mapa = resumen.dropna(subset=["Latitud", "Longitud"])
-
-        st.info(
-            f"📍 Direcciones procesadas en mapa: {len(df_mapa)} de {len(df_geo)}"
-        )
-
-        if not df_mapa.empty:
-          lat_centro = df_mapa["Latitud"].mean()
-          lon_centro = df_mapa["Longitud"].mean()
-
-          m = folium.Map(
-              location=[lat_centro, lon_centro],
-              zoom_start=10,
-              tiles="OpenStreetMap",
-          )
-
-          Fullscreen(
-              position="topright",
-              title="Pantalla completa",
-              title_cancel="Salir de pantalla completa",
-              force_separate_button=True,
-          ).add_to(m)
-
-          heat_data = [
-              [row["Latitud"], row["Longitud"], row["Cant_Inspecciones"]]
-              for _, row in df_mapa.iterrows()
-          ]
-
-          HeatMap(heat_data, radius=18, blur=12, max_zoom=15).add_to(m)
-
-          st_folium(m, width="100%", height=550)
-        else:
-          st.warning(
-              "No se pudieron cargar coordenadas válidas. Presioná el botón"
-              " 'Generar / Actualizar Coordenadas'."
-          )
-      else:
-        st.info(
-            "Presioná el botón superior para calcular y guardar las coordenadas"
-            " por primera vez."
-        )
-    else:
-      st.warning(
-          "No se encontró la columna 'Direccion_Corta' en la base de datos."
-      )
+    Fullscreen().add_to(mapa)
+    st_folium(mapa, width="100%", height=600)
 
   # --- SECCIÓN 8: CARGA Y CONFIGURACIÓN ---
   elif opcion == "⚙️ Carga y Configuración":
-    st.title("⚙️ Carga y Actualización de Archivos")
-    st.info(
-        "💡 Base 2025 Fija:"
-        f" `{DEFAULT_FILE_2025}`  \n💡 Base 2026 Dinámica:"
-        f" `{DEFAULT_FILE_2026}`"
-    )
+    st.title("⚙️ Carga y Configuración")
+    st.write("Vista de los datos procesados en memoria y gestión de la herramienta.")
+
+    st.subheader("Base de Datos Procesada (Memoria 2026)")
+    st.dataframe(df_raw, use_container_width=True)
+
+    st.divider()
+    st.subheader("Mantenimiento")
+    if st.button("🗑️ Borrar Caché de Coordenadas"):
+        if os.path.exists(CACHE_FILE):
+            os.remove(CACHE_FILE)
+            st.success("Caché de coordenadas eliminado exitosamente. Se regenerará en la próxima carga del mapa.")
+            st.rerun()
+        else:
+            st.info("No hay caché de coordenadas local para borrar.")
+
 else:
-  st.warning("Esperando carga de base de datos...")
+    st.warning(
+        "⚠️ No se han cargado datos válidos. Por favor, subí un archivo Excel "
+        "desde el menú lateral para comenzar o verificá que el archivo por defecto "
+        "exista en la misma carpeta."
+    )
