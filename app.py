@@ -233,8 +233,45 @@ uploaded_file_2026 = st.sidebar.file_uploader(
     key="uploader_2026",
 )
 
+# Columnas mínimas que necesita la app para funcionar correctamente. Si
+# falta alguna, el Excel probablemente no es el correcto (nombre de hoja
+# distinto, formato viejo, archivo equivocado, etc.)
+COLUMNAS_CRITICAS = ["CALLE", "TREL", "TNR"]
+COLUMNAS_FECHA_VALIDAS = ["FECHA", "Fecha"]
+COLUMNAS_INSPECTOR_VALIDAS = ["Inspec.", "INSPECTOR", "Inspector"]
+
+
+def validar_excel_subido(archivo_subido):
+  """Chequea que el Excel tenga las columnas mínimas antes de guardarlo.
+  Devuelve (ok: bool, faltantes: list[str])."""
+  try:
+    excel_file = pd.ExcelFile(io.BytesIO(archivo_subido.getvalue()), engine="openpyxl")
+    df_check = excel_file.parse(excel_file.sheet_names[0], nrows=5)
+  except Exception as e:
+    return False, [f"No se pudo leer el archivo como Excel válido ({e})"]
+
+  faltantes = [c for c in COLUMNAS_CRITICAS if c not in df_check.columns]
+  if not any(c in df_check.columns for c in COLUMNAS_FECHA_VALIDAS):
+    faltantes.append("FECHA (o Fecha)")
+  if not any(c in df_check.columns for c in COLUMNAS_INSPECTOR_VALIDAS):
+    faltantes.append("Inspec. (o INSPECTOR / Inspector)")
+
+  return len(faltantes) == 0, faltantes
+
+
 if uploaded_file_2026 is not None:
-  if st.sidebar.button("💾 Guardar como nueva Base 2026 (permanente)"):
+  excel_ok, columnas_faltantes = validar_excel_subido(uploaded_file_2026)
+
+  if not excel_ok:
+    st.sidebar.error(
+        "⚠️ Este archivo no parece ser la base correcta. Faltan columnas"
+        f" esperadas: {', '.join(columnas_faltantes)}. Revisá que sea el"
+        " Excel correcto antes de guardarlo."
+    )
+
+  if st.sidebar.button(
+      "💾 Guardar como nueva Base 2026 (permanente)", disabled=not excel_ok
+  ):
     with st.sidebar:
       with st.spinner("Guardando de forma permanente en GitHub..."):
         mensaje = (
@@ -455,16 +492,8 @@ def cargar_datos(file_source):
   resumen["% Irregularidad"] = (
       (resumen["Cant_Irregulares"] / resumen["Cant_Inspecciones"]) * 100
   ).round(1)
+  resumen["Tuvo_Irregularidad"] = resumen["Cant_Irregulares"] > 0
 
-  def asignar_prioridad(row):
-    if row["Cant_Inspecciones"] == 1 and row["Cant_Irregulares"] > 0:
-      return "🔴 ALTA (1 sola insp. e irregular)"
-    elif row["Cant_Inspecciones"] <= 2:
-      return "🟡 MEDIA (1-2 inspecciones)"
-    else:
-      return "🟢 BAJA (3+ inspecciones)"
-
-  resumen["Prioridad"] = resumen.apply(asignar_prioridad, axis=1)
   return df, resumen
 
 
@@ -518,6 +547,77 @@ def cargar_base_2025_fija(path):
 
 df_raw_2025, resumen_2025 = cargar_base_2025_fija(DEFAULT_FILE_2025)
 
+
+# --- CÁLCULO DE PRIORIDAD (cruza Base 2026 con Base 2025) ---
+DIAS_UMBRAL_PRIORIDAD = 60
+
+
+def calcular_prioridad_final(resumen_2026, resumen_25):
+  """Asigna Prioridad ALTA/BAJA según dos reglas:
+  1) Irregular + última fiscalización hace 60 días o más -> ALTA.
+  2) Fiscalizado en 2025 pero todavía sin ninguna fiscalización en 2026
+     -> ALTA (se agrega como fila nueva, ya que no existe en la Base 2026).
+  Todo lo demás (regulares, o irregulares dentro del plazo de 60 días) -> BAJA.
+  """
+  if resumen_2026 is None or resumen_2026.empty:
+    return resumen_2026
+
+  hoy = pd.Timestamp.now().normalize()
+  limite = hoy - pd.Timedelta(days=DIAS_UMBRAL_PRIORIDAD)
+
+  resumen_2026 = resumen_2026.copy()
+
+  def _prioridad(row):
+    tiene_irregular = row["Cant_Irregulares"] > 0
+    ultima = row["Ultima_Inspeccion"]
+    if tiene_irregular and pd.notna(ultima) and ultima <= limite:
+      return "🔴 ALTA (Irregular, sin refiscalizar hace 60+ días)"
+    return "🟢 BAJA"
+
+  def _dias_restantes(row):
+    # Cuenta regresiva: solo aplica a locales irregulares que TODAVÍA no
+    # llegaron a los 60 días (o sea, hoy están en Prioridad Baja pero van
+    # a pasar a Alta en algún momento si no se los vuelve a fiscalizar).
+    tiene_irregular = row["Cant_Irregulares"] > 0
+    ultima = row["Ultima_Inspeccion"]
+    if not tiene_irregular or pd.isna(ultima):
+      return None
+    dias_transcurridos = (hoy - ultima).days
+    restantes = DIAS_UMBRAL_PRIORIDAD - dias_transcurridos
+    return int(restantes) if restantes > 0 else 0
+
+  resumen_2026["Prioridad"] = resumen_2026.apply(_prioridad, axis=1)
+  resumen_2026["Dias_Restantes_Prioridad"] = resumen_2026.apply(
+      _dias_restantes, axis=1
+  )
+  # Reincidencia: locales con más de una inspección irregular en el año
+  resumen_2026["Reincidente"] = resumen_2026["Cant_Irregulares"] >= 2
+
+  if resumen_25 is not None and not resumen_25.empty:
+    dirs_2026 = set(resumen_2026["Direccion_Corta"].unique())
+    pendientes = resumen_25[
+        ~resumen_25["Direccion_Corta"].isin(dirs_2026)
+    ].copy()
+    if not pendientes.empty:
+      pendientes["Cant_Inspecciones"] = 0
+      pendientes["Cant_Irregulares"] = 0
+      pendientes["Total_TREL"] = 0
+      pendientes["Ultimo_Estado"] = "Sin fiscalizar en 2026"
+      pendientes["Ultima_Inspeccion"] = pd.NaT
+      pendientes["% Irregularidad"] = 0.0
+      pendientes["Tuvo_Irregularidad"] = False
+      pendientes["Dias_Restantes_Prioridad"] = None
+      pendientes["Reincidente"] = False
+      pendientes["Prioridad"] = "🔴 ALTA (Fiscalizado en 2025, aún no en 2026)"
+      resumen_2026 = pd.concat(
+          [resumen_2026, pendientes], ignore_index=True, sort=False
+      )
+
+  return resumen_2026
+
+
+resumen = calcular_prioridad_final(resumen, resumen_2025)
+
 if resumen is not None:
 
   # --- SECCIÓN 1: DASHBOARD GENERAL ---
@@ -525,39 +625,109 @@ if resumen is not None:
     st.title("📊 Panel de Control e Inspecciones 2026")
     st.caption("Visión sintética de la tasa de inspecciones y estado en calle.")
 
+    # Columnas centrales para cualquier tabla de esta sección: dirección,
+    # cantidad de inspecciones, si tuvo irregularidad, fecha de última
+    # inspección y CUIT.
+    resumen_real = resumen[resumen["Cant_Inspecciones"] > 0]
+    cols_centrales = [
+        "Direccion_Corta",
+        "Cant_Inspecciones",
+        "Tuvo_Irregularidad",
+        "Ultima_Inspeccion",
+        "CUIT",
+    ]
+
+    # --- FILA 1: INDICADORES CLAVE ---
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Locales / Domicilios", len(resumen))
+    c1.metric("Total Locales / Domicilios", len(resumen_real))
     c2.metric(
-        "Total Inspecciones Realizadas", resumen["Cant_Inspecciones"].sum()
+        "Total Inspecciones Realizadas", resumen_real["Cant_Inspecciones"].sum()
     )
-    c3.metric(
-        "Total Trabajadores Registrados (TREL)", int(resumen["Total_TREL"].sum())
+    pct_irregularidad_global = (
+        resumen_real["Cant_Irregulares"].sum()
+        / resumen_real["Cant_Inspecciones"].sum()
+        * 100
+        if resumen_real["Cant_Inspecciones"].sum() > 0
+        else 0
     )
+    c3.metric("% Irregularidad Global", f"{pct_irregularidad_global:.1f}%")
     c4.metric(
         "Prioridad Alta (Refiscalizar)",
         len(resumen[resumen["Prioridad"].str.contains("ALTA")]),
     )
 
     st.divider()
-    col_left, col_right = st.columns(2)
-    with col_left:
-      st.subheader("Distribución por Nivel de Prioridad")
-      st.bar_chart(resumen["Prioridad"].value_counts())
-    with col_right:
-      st.subheader("Top 10 Domicilios con Mayor Cantidad de Inspecciones")
-      top_insp = resumen.sort_values(
-          by="Cant_Inspecciones", ascending=False
-      ).head(10)
-      st.dataframe(
-          top_insp[[
-              "Direccion_Corta",
-              "Razon_Social",
-              "CUIT",
-              "Cant_Inspecciones",
-              "Ultimo_Estado",
-          ]],
-          use_container_width=True,
-      )
+
+    # --- FILA 2: RITMO DE TRABAJO Y COBERTURA 2025->2026 ---
+    col_ritmo, col_cobertura = st.columns(2)
+    with col_ritmo:
+      st.subheader("📈 Ritmo de Inspecciones por Mes (2026)")
+      if df_raw is not None and "Fecha_Clean" in df_raw.columns:
+        por_mes = (
+            df_raw.dropna(subset=["Fecha_Clean"])
+            .groupby(df_raw["Fecha_Clean"].dt.to_period("M"))
+            .size()
+        )
+        por_mes.index = por_mes.index.astype(str)
+        st.line_chart(por_mes)
+      else:
+        st.info("Sin datos de fecha disponibles para graficar.")
+
+    with col_cobertura:
+      st.subheader("🔄 Cobertura de Refiscalización 2025 → 2026")
+      if (
+          resumen_2025 is not None
+          and not resumen_2025.empty
+          and df_raw is not None
+      ):
+        dirs_2025 = set(resumen_2025["Direccion_Corta"].unique())
+        dirs_2026_real = set(df_raw["Direccion_Corta"].unique())
+        ya_refiscalizados = len(dirs_2025 & dirs_2026_real)
+        pct_cobertura = (
+            ya_refiscalizados / len(dirs_2025) * 100 if dirs_2025 else 0
+        )
+        st.metric(
+            "Locales 2025 ya con inspección en 2026",
+            f"{ya_refiscalizados} / {len(dirs_2025)}",
+            f"{pct_cobertura:.1f}% de cobertura",
+        )
+        st.progress(min(pct_cobertura / 100, 1.0))
+      else:
+        st.info("No hay Base 2025 cargada para comparar.")
+
+    st.divider()
+
+    # --- FILA 3: CALLES CON MAYOR % DE IRREGULARIDAD ---
+    st.subheader("⚠️ Top 10 Calles con Mayor % de Irregularidad")
+    st.caption(
+        "Solo calles con 3 o más inspecciones registradas, para evitar"
+        " distorsión por muestras muy chicas."
+    )
+    calles_irregular = (
+        resumen_real.groupby("Calle_Nombre")
+        .agg(
+            Inspecciones=("Cant_Inspecciones", "sum"),
+            Irregulares=("Cant_Irregulares", "sum"),
+        )
+        .reset_index()
+    )
+    calles_irregular = calles_irregular[calles_irregular["Inspecciones"] >= 3]
+    calles_irregular["% Irregularidad"] = (
+        calles_irregular["Irregulares"] / calles_irregular["Inspecciones"] * 100
+    ).round(1)
+    calles_irregular = calles_irregular.sort_values(
+        by="% Irregularidad", ascending=False
+    ).head(10)
+    st.dataframe(calles_irregular, use_container_width=True)
+
+    st.divider()
+
+    # --- FILA 4: TOP 10 DOMICILIOS CON MÁS INSPECCIONES ---
+    st.subheader("🏪 Top 10 Domicilios con Mayor Cantidad de Inspecciones")
+    top_insp = resumen_real.sort_values(
+        by="Cant_Inspecciones", ascending=False
+    ).head(10)
+    st.dataframe(top_insp[cols_centrales], use_container_width=True)
 
   # --- SECCIÓN 2: ANÁLISIS POR CALLE / CUADRA ---
   elif opcion == "DM Análisis por Calle / Cuadra":
@@ -953,33 +1123,14 @@ if resumen is not None:
   # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS Y TRÍOS) ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
-
-    metodo = st.radio(
-        "Método de cálculo:",
-        ["Método Real", "Método Ramadori"],
-        horizontal=True,
-        help=(
-            "Método Real: cada inspector que participó en una inspección se"
-            " lleva el crédito completo (1 punto), aunque la haya hecho en"
-            " pareja o en trío. Método Ramadori: la inspección se reparte en"
-            " partes iguales entre todos los que participaron (ej. un trío"
-            " suma 0.33 a cada uno en vez de 1 completo a cada uno)."
-        ),
+    st.write(
+        "Se muestran los dos métodos de cálculo en simultáneo. **Método"
+        " Real**: cada inspector que participó en una inspección se lleva"
+        " el crédito completo (1 punto), aunque la haya hecho en pareja o"
+        " en trío. **Método Ramadori**: la inspección se reparte en partes"
+        " iguales entre todos los que participaron (ej. un trío suma 0.33"
+        " a cada uno en vez de 1 completo a cada uno)."
     )
-
-    if metodo == "Método Real":
-      st.write(
-          "El sistema desglosa cada combinación o pareja/trío (ej. AG ->"
-          " Aníbal y Guillermo / CG -> Cynthia y Guillermo) asignándole 1"
-          " punto completo de la inspección a cada uno de los participantes."
-      )
-    else:
-      st.write(
-          "El sistema desglosa cada combinación o pareja/trío y reparte la"
-          " inspección en partes iguales entre los participantes (ej. un"
-          " trío suma 0.33 a cada uno), reflejando el aporte individual real"
-          " dentro del trabajo en equipo."
-      )
 
     def desglosar_inspectores(cadena):
       if not isinstance(cadena, str) or not cadena.strip():
@@ -1036,47 +1187,62 @@ if resumen is not None:
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
 
-    # Peso de cada inspección para cada inspector: 1 punto completo en el
-    # Método Real, o 1/N repartido entre los participantes en el Ramadori
-    if metodo == "Método Real":
-      df_explotado["Peso"] = 1.0
-    else:
-      df_explotado["Peso"] = 1.0 / df_explotado["N_Participantes"].replace(
-          0, 1
-      )
-
-    df_explotado["TREL_Ponderado"] = df_explotado["TREL"] * df_explotado["Peso"]
-    df_explotado["Irregular_Ponderado"] = (
-        df_explotado["Es_Irregular"] * df_explotado["Peso"]
+    # Se calculan los dos pesos en simultáneo: Real (1 punto completo) y
+    # Ramadori (1/N repartido entre los participantes de esa inspección).
+    df_explotado["Peso_Real"] = 1.0
+    df_explotado["Peso_Ramadori"] = 1.0 / df_explotado["N_Participantes"].replace(
+        0, 1
+    )
+    df_explotado["TREL_Real"] = df_explotado["TREL"] * df_explotado["Peso_Real"]
+    df_explotado["TREL_Ramadori"] = (
+        df_explotado["TREL"] * df_explotado["Peso_Ramadori"]
+    )
+    df_explotado["Irregular_Real"] = (
+        df_explotado["Es_Irregular"] * df_explotado["Peso_Real"]
+    )
+    df_explotado["Irregular_Ramadori"] = (
+        df_explotado["Es_Irregular"] * df_explotado["Peso_Ramadori"]
     )
 
-    # Agrupación por inspector individual
     ranking_df = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
-            Total_Inspecciones=("Peso", "sum"),
+            Total_Inspecciones_Real=("Peso_Real", "sum"),
+            Total_Inspecciones_Ramadori=("Peso_Ramadori", "sum"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
-            Total_TREL=("TREL_Ponderado", "sum"),
-            Irregularidades=("Irregular_Ponderado", "sum"),
+            Total_TREL_Real=("TREL_Real", "sum"),
+            Total_TREL_Ramadori=("TREL_Ramadori", "sum"),
+            Irregularidades_Real=("Irregular_Real", "sum"),
+            Irregularidades_Ramadori=("Irregular_Ramadori", "sum"),
         )
         .reset_index()
+        .rename(columns={"Inspector_Individual": "Inspector"})
     )
 
-    if metodo == "Método Ramadori":
-      ranking_df["Total_Inspecciones"] = ranking_df["Total_Inspecciones"].round(2)
-      ranking_df["Total_TREL"] = ranking_df["Total_TREL"].round(2)
-      ranking_df["Irregularidades"] = ranking_df["Irregularidades"].round(2)
-    else:
-      ranking_df["Total_Inspecciones"] = ranking_df["Total_Inspecciones"].astype(int)
-      ranking_df["Total_TREL"] = ranking_df["Total_TREL"].astype(int)
-      ranking_df["Irregularidades"] = ranking_df["Irregularidades"].astype(int)
+    ranking_df["Total_Inspecciones_Real"] = ranking_df[
+        "Total_Inspecciones_Real"
+    ].astype(int)
+    ranking_df["Total_TREL_Real"] = ranking_df["Total_TREL_Real"].astype(int)
+    ranking_df["Irregularidades_Real"] = ranking_df[
+        "Irregularidades_Real"
+    ].astype(int)
+    for col in [
+        "Total_Inspecciones_Ramadori",
+        "Total_TREL_Ramadori",
+        "Irregularidades_Ramadori",
+    ]:
+      ranking_df[col] = ranking_df[col].round(2)
 
-    ranking_df["% Irregularidad"] = (
-        (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
+    ranking_df["% Irregularidad (Real)"] = (
+        ranking_df["Irregularidades_Real"]
+        / ranking_df["Total_Inspecciones_Real"]
+        * 100
     ).round(1)
-    ranking_df = ranking_df.sort_values(
-        by="Total_Inspecciones", ascending=False
-    ).rename(columns={"Inspector_Individual": "Inspector"})
+    ranking_df["% Irregularidad (Ramadori)"] = (
+        ranking_df["Irregularidades_Ramadori"]
+        / ranking_df["Total_Inspecciones_Ramadori"]
+        * 100
+    ).round(1)
 
     # Aviso si quedaron códigos de inspector sin identificar en el diccionario
     sin_mapear = ranking_df[
@@ -1090,40 +1256,53 @@ if resumen is not None:
           " que dejen de aparecer sueltos en el ranking."
       )
 
-    # Métricas Generales
+    # Métricas Generales (según Método Real, el más intuitivo como titular)
     i1, i2, i3, i4 = st.columns(4)
     i1.metric("Inspectores Identificados", len(ranking_df))
     i2.metric(
         "Prom. Inspecciones p/ Inspector",
-        f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
+        f"{(ranking_df['Total_Inspecciones_Real'].mean()):.1f}",
     )
     i3.metric(
-        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max()
+        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones_Real"].max()
     )
-    i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL"].sum()))
+    i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL_Real"].sum()))
 
     st.divider()
 
-    col_rank_tabla, col_rank_chart = st.columns([1.2, 1])
+    # --- LOS DOS MÉTODOS, LADO A LADO ---
+    col_real, col_ramadori = st.columns(2)
 
-    with col_rank_tabla:
-      st.subheader("🏆 Posiciones Individuales")
-      st.dataframe(
-          ranking_df[[
-              "Inspector",
-              "Total_Inspecciones",
-              "Locales_Unicos",
-              "Total_TREL",
-              "Irregularidades",
-              "% Irregularidad",
-          ]],
-          use_container_width=True,
+    with col_real:
+      st.subheader("🏆 Método Real")
+      rank_real = ranking_df[[
+          "Inspector",
+          "Total_Inspecciones_Real",
+          "Locales_Unicos",
+          "Total_TREL_Real",
+          "Irregularidades_Real",
+          "% Irregularidad (Real)",
+      ]].sort_values(by="Total_Inspecciones_Real", ascending=False)
+      st.dataframe(rank_real, use_container_width=True)
+      st.bar_chart(
+          data=rank_real.set_index("Inspector")["Total_Inspecciones_Real"]
       )
 
-    with col_rank_chart:
-      st.subheader("📊 Gráfico de Inspecciones por Inspector")
+    with col_ramadori:
+      st.subheader("⚖️ Método Ramadori")
+      rank_ramadori = ranking_df[[
+          "Inspector",
+          "Total_Inspecciones_Ramadori",
+          "Locales_Unicos",
+          "Total_TREL_Ramadori",
+          "Irregularidades_Ramadori",
+          "% Irregularidad (Ramadori)",
+      ]].sort_values(by="Total_Inspecciones_Ramadori", ascending=False)
+      st.dataframe(rank_ramadori, use_container_width=True)
       st.bar_chart(
-          data=ranking_df.set_index("Inspector")["Total_Inspecciones"]
+          data=rank_ramadori.set_index("Inspector")[
+              "Total_Inspecciones_Ramadori"
+          ]
       )
 
     st.divider()
@@ -1141,29 +1320,35 @@ if resumen is not None:
           df_explotado["Inspector_Individual"] == inspector_sel
       ]
 
+      st.markdown("**Método Real**")
       d1, d2, d3, d4 = st.columns(4)
-      insp_intervenidas = df_inspector["Peso"].sum()
-      trel_intervenido = df_inspector["TREL_Ponderado"].sum()
-      irregularidades_intervenidas = df_inspector["Irregular_Ponderado"].sum()
-
       d1.metric(
-          "Inspecciones Intervenidas",
-          f"{insp_intervenidas:.2f}" if metodo == "Método Ramadori"
-          else int(insp_intervenidas),
+          "Inspecciones Intervenidas", int(df_inspector["Peso_Real"].sum())
       )
       d2.metric(
           "Locales Distintos Visitó",
           df_inspector["Direccion_Corta"].nunique(),
       )
-      d3.metric(
-          "Total TREL Relevado",
-          f"{trel_intervenido:.2f}" if metodo == "Método Ramadori"
-          else int(trel_intervenido),
-      )
+      d3.metric("Total TREL Relevado", int(df_inspector["TREL_Real"].sum()))
       d4.metric(
-          "Irregularidades",
-          f"{irregularidades_intervenidas:.2f}" if metodo == "Método Ramadori"
-          else int(irregularidades_intervenidas),
+          "Irregularidades", int(df_inspector["Irregular_Real"].sum())
+      )
+
+      st.markdown("**Método Ramadori**")
+      e1, e2, e3, e4 = st.columns(4)
+      e1.metric(
+          "Inspecciones Intervenidas",
+          f"{df_inspector['Peso_Ramadori'].sum():.2f}",
+      )
+      e2.metric(
+          "Locales Distintos Visitó",
+          df_inspector["Direccion_Corta"].nunique(),
+      )
+      e3.metric(
+          "Total TREL Relevado", f"{df_inspector['TREL_Ramadori'].sum():.2f}"
+      )
+      e4.metric(
+          "Irregularidades", f"{df_inspector['Irregular_Ramadori'].sum():.2f}"
       )
 
       cols_hist_insp = [
@@ -1203,19 +1388,66 @@ if resumen is not None:
     )
 
     res_filtrado = resumen[resumen["Prioridad"].isin(prio_filtro)]
-    st.dataframe(
-        res_filtrado[[
-            "Direccion_Corta",
-            "Razon_Social",
-            "CUIT",
-            "Localidad",
-            "Cant_Inspecciones",
-            "Total_TREL",
-            "Ultimo_Estado",
-            "Prioridad",
-        ]].sort_values(by=["Cant_Inspecciones"], ascending=[True]),
-        use_container_width=True,
+
+    cols_tablero = [
+        "Direccion_Corta",
+        "Razon_Social",
+        "CUIT",
+        "Localidad",
+        "Cant_Inspecciones",
+        "Total_TREL",
+        "Ultimo_Estado",
+        "Prioridad",
+        "Dias_Restantes_Prioridad",
+        "Reincidente",
+    ]
+    tabla_prioridades = res_filtrado[cols_tablero].rename(
+        columns={"Dias_Restantes_Prioridad": "Días Restantes (a Alta)"}
+    ).sort_values(by=["Cant_Inspecciones"], ascending=[True])
+
+    st.dataframe(tabla_prioridades, use_container_width=True)
+
+    # --- EXPORTAR A EXCEL ---
+    buffer_export = io.BytesIO()
+    with pd.ExcelWriter(buffer_export, engine="openpyxl") as writer:
+      tabla_prioridades.to_excel(
+          writer, index=False, sheet_name="Tablero Prioridades"
+      )
+    st.download_button(
+        "📥 Exportar Tablero a Excel",
+        data=buffer_export.getvalue(),
+        file_name=(
+            f"Tablero_Prioridades_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        ),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    st.divider()
+
+    # --- ALERTA DE REINCIDENCIA ---
+    reincidentes = resumen[resumen["Reincidente"]]
+    if not reincidentes.empty:
+      st.subheader(
+          f"⚠️ Locales Reincidentes ({len(reincidentes)}) — 2 o más"
+          " inspecciones irregulares en el año"
+      )
+      st.caption(
+          "Probablemente los que más atención necesitan, más allá de si ya"
+          " pasaron o no los 60 días de plazo."
+      )
+      st.dataframe(
+          reincidentes[[
+              "Direccion_Corta",
+              "Razon_Social",
+              "CUIT",
+              "Cant_Inspecciones",
+              "Cant_Irregulares",
+              "Prioridad",
+          ]].sort_values(by="Cant_Irregulares", ascending=False),
+          use_container_width=True,
+      )
+    else:
+      st.info("No hay locales reincidentes (2+ inspecciones irregulares) en la base actual.")
 
   # --- SECCIÓN 7: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
   elif opcion == "🗺️ Mapa de Control":
