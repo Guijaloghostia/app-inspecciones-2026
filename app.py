@@ -1,7 +1,11 @@
+import base64
+from datetime import datetime
+import io
 import json
 import os
 import time
 import pandas as pd
+import requests
 import streamlit as st
 
 # --- LIBRERÍAS PARA EL MAPA DE CALOR Y GEOLOCALIZACIÓN ---
@@ -27,22 +31,25 @@ def check_password():
         username = st.session_state.get("username", "")
         password = st.session_state.get("password", "")
 
+        # Verifica contra los credenciales guardados en Secrets (o valores por defecto de prueba)
         allowed_users = st.secrets.get("passwords", {"admin": "1234"})
 
         if username in allowed_users and allowed_users[username] == password:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            del st.session_state["password"]  # No guardamos la clave en memoria
             del st.session_state["username"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
+        # Primera vez que entra, muestra el formulario de Login
         st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
         st.text_input("Usuario", key="username")
         st.text_input("Contraseña", type="password", key="password")
         st.button("Iniciar Sesión", on_click=password_entered)
         return False
     elif not st.session_state["password_correct"]:
+        # Si falló el login
         st.markdown("## 🔒 Acceso Restringido - Control de Refiscalización")
         st.text_input("Usuario", key="username")
         st.text_input("Contraseña", type="password", key="password")
@@ -50,18 +57,23 @@ def check_password():
         st.error("😕 Usuario o contraseña incorrectos.")
         return False
     else:
+        # Credenciales correctas
         return True
 
+# Si el usuario NO está autenticado, detiene la ejecución del resto del código
 if not check_password():
     st.stop()
 
+# Botón para cerrar sesión en la barra lateral
 if st.sidebar.button("🚪 Cerrar Sesión"):
     st.session_state["password_correct"] = False
     st.rerun()
 
 # ==============================================================================
-# --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
+# --- A PARTIR DE ACÁ SIGUE TODO TU CÓDIGO NORMAL ---
 # ==============================================================================
+
+# --- DICCIONARIO CENTRALIZADO DE INICIALES/CÓDIGOS A NOMBRES COMPLETOS ---
 MAPEO_INICIALES = {
     "A": "Aníbal",
     "ANIBAL": "Aníbal",
@@ -106,6 +118,7 @@ st.markdown(
         font-weight: bold;
     }
 
+    /* AGRANDAR LETRA EN BARRA LATERAL */
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
         font-size: 20px !important;
         font-weight: 600 !important;
@@ -133,6 +146,69 @@ DEFAULT_FILE_2026 = "001-BASE COMPARTIDA FISCALIZACIONES 2026.xlsx"
 DEFAULT_FILE_2025 = "04-BASE FISCALIZACIONES POR DOMICILIO 2025.xlsx"
 CACHE_FILE = "coordenadas.json"
 
+# --- PERSISTENCIA REAL EN GITHUB (para sobrevivir reinicios/sleep de Render) ---
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+REPO_OWNER = "Guijaloghostia"
+REPO_NAME = "app-inspecciones-2026"
+BRANCH = "main"
+
+
+def _github_get(path):
+  """Trae el contenido crudo (bytes) y el sha de un archivo del repo, o (None, None)."""
+  if not GITHUB_TOKEN:
+    return None, None
+  url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{path}"
+  headers = {
+      "Authorization": f"Bearer {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github+json",
+  }
+  try:
+    resp = requests.get(url, headers=headers, params={"ref": BRANCH}, timeout=10)
+  except Exception:
+    return None, None
+  if resp.status_code == 200:
+    data = resp.json()
+    return base64.b64decode(data["content"]), data.get("sha")
+  return None, None
+
+
+def _github_put(path, contenido_bytes, mensaje_commit):
+  """Commitea (crea o reemplaza) un archivo en el repo. Devuelve True/False."""
+  if not GITHUB_TOKEN:
+    st.error("⚠️ No se encontró GITHUB_TOKEN en las variables de entorno de Render.")
+    return False
+  url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{path}"
+  headers = {
+      "Authorization": f"Bearer {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github+json",
+  }
+  _, sha_actual = _github_get(path)
+  payload = {
+      "message": mensaje_commit,
+      "content": base64.b64encode(contenido_bytes).decode("utf-8"),
+      "branch": BRANCH,
+  }
+  if sha_actual:
+    payload["sha"] = sha_actual
+  try:
+    resp = requests.put(url, headers=headers, json=payload, timeout=15)
+  except Exception as e:
+    st.error(f"❌ Error de conexión al guardar en GitHub: {e}")
+    return False
+  if resp.status_code in (200, 201):
+    return True
+  st.error(f"❌ Error al guardar en GitHub ({resp.status_code}): {resp.text}")
+  return False
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_excel_2026_desde_github():
+  """Trae la última versión del Excel 2026 directo de GitHub. None si no hay token o falla."""
+  contenido, _ = _github_get(DEFAULT_FILE_2026)
+  if contenido is None:
+    return None
+  return io.BytesIO(contenido)
+
 # --- NAVEGACIÓN PRINCIPAL ---
 st.sidebar.title("📌 Menú Principal")
 opcion = st.sidebar.radio(
@@ -157,8 +233,33 @@ uploaded_file_2026 = st.sidebar.file_uploader(
     key="uploader_2026",
 )
 
-# --- MANEJO DE CACHÉ DE COORDENADAS ---
+if uploaded_file_2026 is not None:
+  if st.sidebar.button("💾 Guardar como nueva Base 2026 (permanente)"):
+    with st.sidebar:
+      with st.spinner("Guardando de forma permanente en GitHub..."):
+        mensaje = (
+            "Actualización automática Base 2026 - "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        exito = _github_put(
+            DEFAULT_FILE_2026, uploaded_file_2026.getvalue(), mensaje
+        )
+      if exito:
+        st.success("✅ Guardado. Ya quedó como la nueva base para siempre.")
+        st.cache_data.clear()
+        st.rerun()
+      else:
+        st.warning("⚠️ No se guardó en GitHub. Solo vale para esta sesión.")
+
+
+# --- MANEJO DE CACHÉ DE COORDENADAS (persistente en GitHub) ---
 def cargar_cache_coords():
+  contenido, _ = _github_get(CACHE_FILE)
+  if contenido is not None:
+    try:
+      return json.loads(contenido.decode("utf-8"))
+    except Exception:
+      pass
   if os.path.exists(CACHE_FILE):
     try:
       with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -167,12 +268,16 @@ def cargar_cache_coords():
       return {}
   return {}
 
+
 def guardar_cache_coords(cache):
+  contenido = json.dumps(cache, ensure_ascii=False, indent=2).encode("utf-8")
   try:
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
-      json.dump(cache, f, ensure_ascii=False, indent=2)
-  except Exception as e:
-    st.error(f"Error al guardar caché de coordenadas: {e}")
+      f.write(contenido.decode("utf-8"))
+  except Exception:
+    pass
+  _github_put(CACHE_FILE, contenido, "Actualización automática de coordenadas")
+
 
 def geocodificar_direcciones_seguro(df_direcciones):
   cache = cargar_cache_coords()
@@ -219,14 +324,21 @@ def geocodificar_direcciones_seguro(df_direcciones):
           f"Procesando nuevas direcciones: {idx + 1} de {total_pendientes}..."
       )
 
-      if (idx + 1) % 10 == 0:
-        guardar_cache_coords(cache)
+      if (idx + 1) % 25 == 0:
+        # Guardado intermedio solo en disco local (rápido); el commit a
+        # GitHub se hace una sola vez al final para no saturar la API.
+        try:
+          with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception:
+          pass
 
-    guardar_cache_coords(cache)
+    guardar_cache_coords(cache)  # commit final a GitHub, persistente
     status_text.empty()
     progress_bar.empty()
 
   return cache
+
 
 # --- FUNCIÓN DE CARGA Y NORMALIZACIÓN DE BASES ---
 def cargar_datos(file_source):
@@ -301,6 +413,7 @@ def cargar_datos(file_source):
   else:
     df["Fecha_Clean"] = pd.NaT
 
+  # Columna de Inspector
   col_inspector = (
       "Inspec."
       if "Inspec." in df.columns
@@ -354,19 +467,25 @@ def cargar_datos(file_source):
   resumen["Prioridad"] = resumen.apply(asignar_prioridad, axis=1)
   return df, resumen
 
+
 # --- CARGA BASE 2026 ---
+# Orden de prioridad: 1) archivo recién elegido en el uploader (vista previa
+# de la sesión actual), 2) última versión guardada en GitHub (fuente de
+# verdad persistente), 3) archivo local del repo como último respaldo.
 df_raw, resumen = None, None
-file_2026 = (
-    uploaded_file_2026
-    if uploaded_file_2026
-    else (DEFAULT_FILE_2026 if os.path.exists(DEFAULT_FILE_2026) else None)
-)
+if uploaded_file_2026:
+  file_2026 = uploaded_file_2026
+else:
+  file_2026 = cargar_excel_2026_desde_github()
+  if file_2026 is None:
+    file_2026 = DEFAULT_FILE_2026 if os.path.exists(DEFAULT_FILE_2026) else None
 
 if file_2026:
   try:
     df_raw, resumen = cargar_datos(file_2026)
   except Exception as e:
     st.error(f"Error cargando Base 2026: {e}")
+
 
 # --- CARGA BASE 2025 (FIJA EN CACHÉ) ---
 @st.cache_data(show_spinner=False)
@@ -377,6 +496,7 @@ def cargar_base_2025_fija(path):
     except Exception:
       return None, None
   return None, None
+
 
 df_raw_2025, resumen_2025 = cargar_base_2025_fija(DEFAULT_FILE_2025)
 
@@ -812,17 +932,20 @@ if resumen is not None:
           use_container_width=True,
       )
 
-  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES ---
+  # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS Y TRÍOS) ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
     st.write(
-        "Comparativa de rendimiento aplicando el tradicional **Método Real** y el nuevo **Método Ramadori** con carga proporcional."
+        "El sistema desglosa cada combinación o pareja/trío (ej. AG -> Aníbal y"
+        " Guillermo / CG -> Cynthia y Guillermo) asignándole 1 punto completo"
+        " de la inspección a cada uno de los participantes."
     )
 
     def desglosar_inspectores(cadena):
       if not isinstance(cadena, str) or not cadena.strip():
         return ["Otros / Sin Identificar"]
 
+      # Separa por guiones, barras o espacios
       partes = str(cadena).replace("/", "-").replace(" ", "-").split("-")
       nombres = []
 
@@ -831,216 +954,274 @@ if resumen is not None:
         if not p_limpia:
           continue
 
+        # 1. Si el código exacto está en el mapa (ej. CIMINO, ARIEL, CINTIA, LUCIANO)
         if p_limpia in MAPEO_INICIALES:
           nombres.append(MAPEO_INICIALES[p_limpia])
         else:
+          # 2. Desglose carácter por carácter para iniciales (ej. AG, CG, ARG, L)
           i = 0
           while i < len(p_limpia):
+            # Probar si las próximas 2 letras son un código conocido (ej. GO, AR)
             if (
                 i + 2 <= len(p_limpia)
                 and p_limpia[i : i + 2] in MAPEO_INICIALES
             ):
               nombres.append(MAPEO_INICIALES[p_limpia[i : i + 2]])
               i += 2
+            # Probar si la letra individual es conocida (ej. A, G, L, C, F, P, H, R)
             elif p_limpia[i] in MAPEO_INICIALES:
               nombres.append(MAPEO_INICIALES[p_limpia[i]])
               i += 1
             else:
+              # ANTES: cualquier código no identificado (N, B, I, O, Z, U, E, etc.)
+              # se mandaba a "Otros / Sin Identificar", mezclando entre sí a
+              # inspectores activos distintos que no estaban en el diccionario.
+              # AHORA: se conserva el código puntual, separado, para poder
+              # identificarlo y sumarlo a MAPEO_INICIALES con su nombre real.
               nombres.append(f"⚠️ Sin mapear ({p_limpia[i]})")
               i += 1
 
       return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
+    # Duplicar filas para que cada integrante sume la inspección completa a su historial individual
     df_exp = df_raw.copy()
-    
-    # Cálculo de proporciones (Incluyendo la irregularidad corregida para Ramadori)
-    df_exp['Cant_Inspectores_Fila'] = df_exp['Inspector_Clean'].astype(str).apply(lambda x: len(desglosar_inspectores(x)))
-    df_exp['Inspecciones_Ramadori'] = 1 / df_exp['Cant_Inspectores_Fila']
-    df_exp['Trabajadores_Ramadori'] = df_exp['TREL'] / df_exp['Cant_Inspectores_Fila']
-    df_exp['Es_Irregular_Ramadori'] = df_exp['Es_Irregular'] / df_exp['Cant_Inspectores_Fila']
-    df_exp['Inspecciones_Real'] = 1
-
-    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(desglosar_inspectores)
+    df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
+        desglosar_inspectores
+    )
     df_explotado = df_exp.explode("Inspectores_Lista").rename(
         columns={"Inspectores_Lista": "Inspector_Individual"}
     )
 
-    # --- TABLA MÉTODO REAL ---
-    tabla_metodo_real = (
+    # Agrupación por inspector individual
+    ranking_df = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
-            Total_Inspecciones=("Inspecciones_Real", "sum"),
+            Total_Inspecciones=("Direccion_Corta", "count"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
             Total_TREL=("TREL", "sum"),
             Irregularidades=("Es_Irregular", "sum"),
         )
         .reset_index()
     )
-    tabla_metodo_real["% Irregularidad"] = ((tabla_metodo_real["Irregularidades"] / tabla_metodo_real["Total_Inspecciones"]) * 100).round(1)
-    tabla_metodo_real = tabla_metodo_real.sort_values(by="Total_Inspecciones", ascending=False).rename(columns={"Inspector_Individual": "Inspector"})
 
-    # --- TABLA MÉTODO RAMADORI (CORREGIDA) ---
-    tabla_metodo_ramadori = (
-        df_explotado.groupby("Inspector_Individual")
-        .agg(
-            Total_Inspecciones=("Inspecciones_Ramadori", "sum"),
-            Locales_Unicos=("Direccion_Corta", "nunique"),
-            Total_TREL=("Trabajadores_Ramadori", "sum"),
-            Irregularidades=("Es_Irregular_Ramadori", "sum"), # Irregularidad fraccionada proporcionalmente
-        )
-        .reset_index()
+    ranking_df["% Irregularidad"] = (
+        (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
+    ).round(1)
+    ranking_df = ranking_df.sort_values(
+        by="Total_Inspecciones", ascending=False
+    ).rename(columns={"Inspector_Individual": "Inspector"})
+
+    # Aviso si quedaron códigos de inspector sin identificar en el diccionario
+    sin_mapear = ranking_df[
+        ranking_df["Inspector"].astype(str).str.startswith("⚠️ Sin mapear")
+    ]
+    if not sin_mapear.empty:
+      codigos = ", ".join(sin_mapear["Inspector"].tolist())
+      st.warning(
+          "⚠️ Hay códigos de inspector sin identificar en el diccionario"
+          f" `MAPEO_INICIALES`: {codigos}. Agregalos con el nombre real para"
+          " que dejen de aparecer sueltos en el ranking."
+      )
+
+    # Métricas Generales
+    i1, i2, i3, i4 = st.columns(4)
+    i1.metric("Inspectores Identificados", len(ranking_df))
+    i2.metric(
+        "Prom. Inspecciones p/ Inspector",
+        f"{(ranking_df['Total_Inspecciones'].mean()):.1f}",
     )
-    tabla_metodo_ramadori["% Irregularidad"] = ((tabla_metodo_ramadori["Irregularidades"] / tabla_metodo_ramadori["Total_Inspecciones"]) * 100).round(1)
-    tabla_metodo_ramadori = tabla_metodo_ramadori.sort_values(by="Total_Inspecciones", ascending=False).rename(columns={"Inspector_Individual": "Inspector"})
+    i3.metric(
+        "Max Inspecciones (Líder)", ranking_df["Total_Inspecciones"].max()
+    )
+    i4.metric("Total TREL Relevados", int(ranking_df["Total_TREL"].sum()))
 
     st.divider()
 
-    # --- BUSCADOR Y FILTRO POR INSPECTOR ---
-    st.subheader("🔍 Búsqueda Específica por Inspector")
-    lista_inspectores_unicos = sorted(tabla_metodo_real["Inspector"].unique().tolist())
-    inspector_buscado = st.selectbox(
-        "Seleccioná un inspector para ver sus totales bajo ambos métodos:",
-        ["(Ver listado completo)"] + lista_inspectores_unicos
-    )
+    col_rank_tabla, col_rank_chart = st.columns([1.2, 1])
 
-    if inspector_buscado != "(Ver listado completo)":
-      df_real_filt = tabla_metodo_real[tabla_metodo_real["Inspector"] == inspector_buscado]
-      df_rama_filt = tabla_metodo_ramadori[tabla_metodo_ramadori["Inspector"] == inspector_buscado]
-      
-      st.success(f"📌 Resultados para: **{inspector_buscado}**")
-      
-      col_fi1, col_fi2 = st.columns(2)
-      with col_fi1:
-          st.markdown("##### 🏢 Método Real (Totales)")
-          st.dataframe(df_real_filt, use_container_width=True)
-      with col_fi2:
-          st.markdown("##### 🧠 Método Ramadori (Totales)")
-          st.dataframe(df_rama_filt, use_container_width=True)
-      
-      st.divider()
+    with col_rank_tabla:
+      st.subheader("🏆 Posiciones Individuales")
+      st.dataframe(
+          ranking_df[[
+              "Inspector",
+              "Total_Inspecciones",
+              "Locales_Unicos",
+              "Total_TREL",
+              "Irregularidades",
+              "% Irregularidad",
+          ]],
+          use_container_width=True,
+      )
 
-    # --- RANKINGS COMPLETOS ---
-    st.subheader("📊 Rankings Completos")
-    col_real, col_ramadori = st.columns(2)
-
-    with col_real:
-        st.markdown("### 🏢 Método Real")
-        st.caption("Inspección entera y total de trabajadores por cada inspector.")
-        st.dataframe(
-            tabla_metodo_real[[
-                "Inspector",
-                "Total_Inspecciones",
-                "Locales_Unicos",
-                "Total_TREL",
-                "Irregularidades",
-                "% Irregularidad",
-            ]],
-            use_container_width=True,
-        )
-
-    with col_ramadori:
-        st.markdown("### 🧠 Método Ramadori")
-        st.caption("Carga de trabajo y trabajadores fraccionados.")
-        st.dataframe(
-            tabla_metodo_ramadori[[
-                "Inspector",
-                "Total_Inspecciones",
-                "Locales_Unicos",
-                "Total_TREL",
-                "Irregularidades",
-                "% Irregularidad",
-            ]],
-            use_container_width=True,
-        )
+    with col_rank_chart:
+      st.subheader("📊 Gráfico de Inspecciones por Inspector")
+      st.bar_chart(
+          data=ranking_df.set_index("Inspector")["Total_Inspecciones"]
+      )
 
     st.divider()
-    st.subheader("📊 Gráfico de Inspecciones (Método Real)")
-    st.bar_chart(data=tabla_metodo_real.set_index("Inspector")["Total_Inspecciones"])
+
+    # Ficha individual
+    st.subheader("🔍 Ficha y Detalle de Actas por Inspector")
+    inspectores_lista = sorted(ranking_df["Inspector"].unique())
+    inspector_sel = st.selectbox(
+        "Seleccioná un inspector para ver sus intervenciones:",
+        [""] + inspectores_lista,
+    )
+
+    if inspector_sel:
+      df_inspector = df_explotado[
+          df_explotado["Inspector_Individual"] == inspector_sel
+      ]
+
+      d1, d2, d3, d4 = st.columns(4)
+      d1.metric("Inspecciones Intervenidas", len(df_inspector))
+      d2.metric(
+          "Locales Distintos Visitó",
+          df_inspector["Direccion_Corta"].nunique(),
+      )
+      d3.metric("Total TREL Relevado", int(df_inspector["TREL"].sum()))
+      d4.metric("Irregularidades", df_inspector["Es_Irregular"].sum())
+
+      cols_hist_insp = [
+          "FECHA",
+          "RAZON SOCIAL",
+          "CUIT_Clean",
+          "CALLE",
+          "Núm.",
+          "Localidad",
+          "TREL",
+          "TNR",
+          "Inspector_Clean",
+          "Expediente",
+      ]
+      cols_presentes_insp = [
+          c for c in cols_hist_insp if c in df_inspector.columns
+      ]
+
+      st.dataframe(
+          df_inspector[cols_presentes_insp].rename(
+              columns={
+                  "CUIT_Clean": "CUIT",
+                  "Inspector_Clean": "Equipo Inspectivo Registrado",
+              }
+          ),
+          use_container_width=True,
+      )
 
   # --- SECCIÓN 6: TABLERO DE PRIORIDADES ---
   elif opcion == "🔴 Tablero de Prioridades":
     st.title("🔴 Tablero de Refiscalización Prioritaria")
-    st.write(
-        "Listado de locales que requieren una nueva visita (Generalmente 1 sola "
-        "inspección con resultado irregular)."
+
+    prio_filtro = st.multiselect(
+        "Filtrar por Nivel de Prioridad:",
+        options=list(resumen["Prioridad"].unique()),
+        default=list(resumen["Prioridad"].unique()),
     )
 
-    prioridades_altas = resumen[resumen["Prioridad"].str.contains("ALTA")]
-    
-    st.metric("Total Locales Prioridad Alta", len(prioridades_altas))
-
+    res_filtrado = resumen[resumen["Prioridad"].isin(prio_filtro)]
     st.dataframe(
-        prioridades_altas[[
+        res_filtrado[[
             "Direccion_Corta",
             "Razon_Social",
             "CUIT",
+            "Localidad",
             "Cant_Inspecciones",
             "Total_TREL",
             "Ultimo_Estado",
             "Prioridad",
-        ]].sort_values(by="Cant_Inspecciones", ascending=True),
+        ]].sort_values(by=["Cant_Inspecciones"], ascending=[True]),
         use_container_width=True,
     )
 
-  # --- SECCIÓN 7: MAPA DE CONTROL ---
+  # --- SECCIÓN 7: MAPA DE CONTROL Y CALOR MULTILOCALIDAD ---
   elif opcion == "🗺️ Mapa de Control":
-    st.title("🗺️ Mapa de Georreferenciación y Calor")
-    st.write("Visualización espacial de las fiscalizaciones.")
+    st.title("🗺️ Mapa de Calor de Fiscalizaciones")
+    st.write(
+        "Geolocalización automática multilocalidad con persistencia de datos."
+    )
 
-    with st.spinner("Geocodificando direcciones faltantes (esto puede demorar un momento la primera vez)..."):
-        cache_coords = geocodificar_direcciones_seguro(resumen)
+    if "Direccion_Corta" in resumen.columns:
+      df_geo = resumen[["Direccion_Corta", "Localidad"]].drop_duplicates(
+          subset=["Direccion_Corta"]
+      )
 
-    mapa = folium.Map(location=[-38.0055, -57.5426], zoom_start=13)
+      col_btn1, col_btn2 = st.columns([1, 2])
+      with col_btn1:
+        obtener_coords = st.button("🌐 Generar / Actualizar Coordenadas")
 
-    heat_data = []
-    for _, row in resumen.iterrows():
-        direccion = row["Direccion_Corta"]
-        coords = cache_coords.get(direccion)
-        if coords and coords[0] is not None:
-            color = "green"
-            if "ALTA" in row["Prioridad"]:
-                color = "red"
-            elif "MEDIA" in row["Prioridad"]:
-                color = "orange"
+      dicc_coords = cargar_cache_coords()
 
-            folium.CircleMarker(
-                location=coords,
-                radius=6,
-                popup=f"<b>{direccion}</b><br>{row['Razon_Social']}<br>Inspecciones: {row['Cant_Inspecciones']}<br>Estado: {row['Ultimo_Estado']}",
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.7,
-            ).add_to(mapa)
-            heat_data.append(coords)
+      if obtener_coords:
+        with st.spinner("Procesando y almacenando coordenadas faltantes..."):
+          dicc_coords = geocodificar_direcciones_seguro(df_geo)
+          st.success("¡Coordenadas actualizadas e indexadas en el sistema!")
 
-    if heat_data:
-        HeatMap(heat_data).add_to(mapa)
+      if dicc_coords:
+        resumen["Latitud"] = resumen["Direccion_Corta"].map(
+            lambda x: dicc_coords.get(x, (None, None))[0]
+            if isinstance(dicc_coords.get(x), (list, tuple))
+            else None
+        )
+        resumen["Longitud"] = resumen["Direccion_Corta"].map(
+            lambda x: dicc_coords.get(x, (None, None))[1]
+            if isinstance(dicc_coords.get(x), (list, tuple))
+            else None
+        )
 
-    Fullscreen().add_to(mapa)
-    st_folium(mapa, width="100%", height=600)
+        df_mapa = resumen.dropna(subset=["Latitud", "Longitud"])
+
+        st.info(
+            f"📍 Direcciones procesadas en mapa: {len(df_mapa)} de {len(df_geo)}"
+        )
+
+        if not df_mapa.empty:
+          lat_centro = df_mapa["Latitud"].mean()
+          lon_centro = df_mapa["Longitud"].mean()
+
+          m = folium.Map(
+              location=[lat_centro, lon_centro],
+              zoom_start=10,
+              tiles="OpenStreetMap",
+          )
+
+          Fullscreen(
+              position="topright",
+              title="Pantalla completa",
+              title_cancel="Salir de pantalla completa",
+              force_separate_button=True,
+          ).add_to(m)
+
+          heat_data = [
+              [row["Latitud"], row["Longitud"], row["Cant_Inspecciones"]]
+              for _, row in df_mapa.iterrows()
+          ]
+
+          HeatMap(heat_data, radius=18, blur=12, max_zoom=15).add_to(m)
+
+          st_folium(m, width="100%", height=550)
+        else:
+          st.warning(
+              "No se pudieron cargar coordenadas válidas. Presioná el botón"
+              " 'Generar / Actualizar Coordenadas'."
+          )
+      else:
+        st.info(
+            "Presioná el botón superior para calcular y guardar las coordenadas"
+            " por primera vez."
+        )
+    else:
+      st.warning(
+          "No se encontró la columna 'Direccion_Corta' en la base de datos."
+      )
 
   # --- SECCIÓN 8: CARGA Y CONFIGURACIÓN ---
   elif opcion == "⚙️ Carga y Configuración":
-    st.title("⚙️ Carga y Configuración")
-    st.write("Vista de los datos procesados en memoria y gestión de la herramienta.")
-
-    st.subheader("Base de Datos Procesada (Memoria 2026)")
-    st.dataframe(df_raw, use_container_width=True)
-
-    st.divider()
-    st.subheader("Mantenimiento")
-    if st.button("🗑️ Borrar Caché de Coordenadas"):
-        if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-            st.success("Caché de coordenadas eliminado exitosamente. Se regenerará en la próxima carga del mapa.")
-            st.rerun()
-        else:
-            st.info("No hay caché de coordenadas local para borrar.")
-
-else:
-    st.warning(
-        "⚠️ No se han cargado datos válidos. Por favor, subí un archivo Excel "
-        "desde el menú lateral para comenzar o verificá que el archivo por defecto "
-        "exista en la misma carpeta."
+    st.title("⚙️ Carga y Actualización de Archivos")
+    st.info(
+        "💡 Base 2025 Fija:"
+        f" `{DEFAULT_FILE_2025}`  \n💡 Base 2026 Dinámica:"
+        f" `{DEFAULT_FILE_2026}`"
     )
+else:
+  st.warning("Esperando carga de base de datos...")
