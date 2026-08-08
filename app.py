@@ -953,11 +953,33 @@ if resumen is not None:
   # --- SECCIÓN 5: RANKING Y DESEMPEÑO DE INSPECTORES (CON DESGLOSE DE PAREJAS Y TRÍOS) ---
   elif opcion == "📋 Ranking de Inspectores":
     st.title("📋 Ranking y Desempeño Individual de Inspectores")
-    st.write(
-        "El sistema desglosa cada combinación o pareja/trío (ej. AG -> Aníbal y"
-        " Guillermo / CG -> Cynthia y Guillermo) asignándole 1 punto completo"
-        " de la inspección a cada uno de los participantes."
+
+    metodo = st.radio(
+        "Método de cálculo:",
+        ["Método Real", "Método Ramadori"],
+        horizontal=True,
+        help=(
+            "Método Real: cada inspector que participó en una inspección se"
+            " lleva el crédito completo (1 punto), aunque la haya hecho en"
+            " pareja o en trío. Método Ramadori: la inspección se reparte en"
+            " partes iguales entre todos los que participaron (ej. un trío"
+            " suma 0.33 a cada uno en vez de 1 completo a cada uno)."
+        ),
     )
+
+    if metodo == "Método Real":
+      st.write(
+          "El sistema desglosa cada combinación o pareja/trío (ej. AG ->"
+          " Aníbal y Guillermo / CG -> Cynthia y Guillermo) asignándole 1"
+          " punto completo de la inspección a cada uno de los participantes."
+      )
+    else:
+      st.write(
+          "El sistema desglosa cada combinación o pareja/trío y reparte la"
+          " inspección en partes iguales entre los participantes (ej. un"
+          " trío suma 0.33 a cada uno), reflejando el aporte individual real"
+          " dentro del trabajo en equipo."
+      )
 
     def desglosar_inspectores(cadena):
       if not isinstance(cadena, str) or not cadena.strip():
@@ -1001,26 +1023,53 @@ if resumen is not None:
 
       return list(set(nombres)) if nombres else ["Otros / Sin Identificar"]
 
-    # Duplicar filas para que cada integrante sume la inspección completa a su historial individual
+    # Duplicar filas para que cada integrante sume la inspección a su historial individual
     df_exp = df_raw.copy()
     df_exp["Inspectores_Lista"] = df_exp["Inspector_Clean"].apply(
         desglosar_inspectores
     )
+    # Cantidad de participantes distintos en esa inspección puntual (para
+    # el reparto proporcional del Método Ramadori)
+    df_exp["N_Participantes"] = df_exp["Inspectores_Lista"].apply(len)
+
     df_explotado = df_exp.explode("Inspectores_Lista").rename(
         columns={"Inspectores_Lista": "Inspector_Individual"}
+    )
+
+    # Peso de cada inspección para cada inspector: 1 punto completo en el
+    # Método Real, o 1/N repartido entre los participantes en el Ramadori
+    if metodo == "Método Real":
+      df_explotado["Peso"] = 1.0
+    else:
+      df_explotado["Peso"] = 1.0 / df_explotado["N_Participantes"].replace(
+          0, 1
+      )
+
+    df_explotado["TREL_Ponderado"] = df_explotado["TREL"] * df_explotado["Peso"]
+    df_explotado["Irregular_Ponderado"] = (
+        df_explotado["Es_Irregular"] * df_explotado["Peso"]
     )
 
     # Agrupación por inspector individual
     ranking_df = (
         df_explotado.groupby("Inspector_Individual")
         .agg(
-            Total_Inspecciones=("Direccion_Corta", "count"),
+            Total_Inspecciones=("Peso", "sum"),
             Locales_Unicos=("Direccion_Corta", "nunique"),
-            Total_TREL=("TREL", "sum"),
-            Irregularidades=("Es_Irregular", "sum"),
+            Total_TREL=("TREL_Ponderado", "sum"),
+            Irregularidades=("Irregular_Ponderado", "sum"),
         )
         .reset_index()
     )
+
+    if metodo == "Método Ramadori":
+      ranking_df["Total_Inspecciones"] = ranking_df["Total_Inspecciones"].round(2)
+      ranking_df["Total_TREL"] = ranking_df["Total_TREL"].round(2)
+      ranking_df["Irregularidades"] = ranking_df["Irregularidades"].round(2)
+    else:
+      ranking_df["Total_Inspecciones"] = ranking_df["Total_Inspecciones"].astype(int)
+      ranking_df["Total_TREL"] = ranking_df["Total_TREL"].astype(int)
+      ranking_df["Irregularidades"] = ranking_df["Irregularidades"].astype(int)
 
     ranking_df["% Irregularidad"] = (
         (ranking_df["Irregularidades"] / ranking_df["Total_Inspecciones"]) * 100
@@ -1093,13 +1142,29 @@ if resumen is not None:
       ]
 
       d1, d2, d3, d4 = st.columns(4)
-      d1.metric("Inspecciones Intervenidas", len(df_inspector))
+      insp_intervenidas = df_inspector["Peso"].sum()
+      trel_intervenido = df_inspector["TREL_Ponderado"].sum()
+      irregularidades_intervenidas = df_inspector["Irregular_Ponderado"].sum()
+
+      d1.metric(
+          "Inspecciones Intervenidas",
+          f"{insp_intervenidas:.2f}" if metodo == "Método Ramadori"
+          else int(insp_intervenidas),
+      )
       d2.metric(
           "Locales Distintos Visitó",
           df_inspector["Direccion_Corta"].nunique(),
       )
-      d3.metric("Total TREL Relevado", int(df_inspector["TREL"].sum()))
-      d4.metric("Irregularidades", df_inspector["Es_Irregular"].sum())
+      d3.metric(
+          "Total TREL Relevado",
+          f"{trel_intervenido:.2f}" if metodo == "Método Ramadori"
+          else int(trel_intervenido),
+      )
+      d4.metric(
+          "Irregularidades",
+          f"{irregularidades_intervenidas:.2f}" if metodo == "Método Ramadori"
+          else int(irregularidades_intervenidas),
+      )
 
       cols_hist_insp = [
           "FECHA",
