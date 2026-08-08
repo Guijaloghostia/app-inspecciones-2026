@@ -472,17 +472,35 @@ def cargar_datos(file_source):
 # Orden de prioridad: 1) archivo recién elegido en el uploader (vista previa
 # de la sesión actual), 2) última versión guardada en GitHub (fuente de
 # verdad persistente), 3) archivo local del repo como último respaldo.
+# --- CARGA BASE 2026 ---
+# Orden de prioridad: 1) archivo recién elegido en el uploader (vista previa
+# de la sesión actual), 2) última versión guardada en GitHub (fuente de
+# verdad persistente), 3) archivo local del repo como último respaldo.
+@st.cache_data(show_spinner="Procesando Base 2026...")
+def cargar_datos_cacheado(file_bytes):
+  # Recibe los bytes crudos (hashable/estable) en vez del objeto archivo,
+  # así Streamlit puede cachear el resultado y no reprocesar el Excel
+  # (parseo + apply de prioridades) en cada click de menú, solo cuando
+  # el contenido del archivo realmente cambia.
+  return cargar_datos(io.BytesIO(file_bytes))
+
+
 df_raw, resumen = None, None
 if uploaded_file_2026:
-  file_2026 = uploaded_file_2026
+  file_bytes_2026 = uploaded_file_2026.getvalue()
 else:
-  file_2026 = cargar_excel_2026_desde_github()
-  if file_2026 is None:
-    file_2026 = DEFAULT_FILE_2026 if os.path.exists(DEFAULT_FILE_2026) else None
+  file_obj = cargar_excel_2026_desde_github()
+  if file_obj is not None:
+    file_bytes_2026 = file_obj.getvalue()
+  elif os.path.exists(DEFAULT_FILE_2026):
+    with open(DEFAULT_FILE_2026, "rb") as f:
+      file_bytes_2026 = f.read()
+  else:
+    file_bytes_2026 = None
 
-if file_2026:
+if file_bytes_2026:
   try:
-    df_raw, resumen = cargar_datos(file_2026)
+    df_raw, resumen = cargar_datos_cacheado(file_bytes_2026)
   except Exception as e:
     st.error(f"Error cargando Base 2026: {e}")
 
